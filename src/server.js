@@ -5,11 +5,12 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph } from './runner.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf } from './runner.js'
 import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
 import { ComfyClient } from './comfy.js'
-import { MODES, QUALITIES } from './csv.js'
+import { QUALITIES } from './csv.js'
+import { MODES } from './workflow.js'
 
 const app = express()
 app.use(express.json({ limit: '5mb' }))
@@ -133,6 +134,14 @@ app.get('/api/runs/:id/coverage', (req, res) => {
   res.json(coverage(Number(req.params.id)))
 })
 
+// which workflow will serve each mode (explicit choice → run default → newest capable upload)
+app.get('/api/runs/:id/workflows', (req, res) => {
+  const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
+  if (!run) return res.status(404).json({ error: 'Run not found' })
+  const { byMode, sources } = resolveWorkflows(run)
+  res.json(Object.fromEntries(MODES.map((m) => [m, byMode[m] ? { id: byMode[m].id, name: byMode[m].name, source: sources[m] } : null])))
+})
+
 app.get('/api/runs/:id/instances', (req, res) => {
   const all = req.query.all === '1'
   const rows = db
@@ -177,12 +186,11 @@ app.post('/api/runs/:id/start', handle(async (req, res) => {
   if (isRunActive(runId)) return res.status(409).json({ error: 'Run already in progress' })
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
   if (!run) return res.status(404).json({ error: 'Run not found' })
-  const workflowId = Number(req.body?.workflowId) || run.workflow_id
-  if (!workflowId || !db.prepare('SELECT id FROM workflows WHERE id = ?').get(workflowId)) {
-    return res.status(400).json({ error: 'Select or upload a workflow first' })
-  }
+  const workflowId = Number(req.body?.workflowId) || run.workflow_id || null
   const settings = { ...JSON.parse(run.settings_json || '{}'), ...(req.body?.settings || {}) }
   db.prepare('UPDATE runs SET workflow_id = ?, settings_json = ? WHERE id = ?').run(workflowId, JSON.stringify(settings), runId)
+  const { byMode } = resolveWorkflows({ ...run, workflow_id: workflowId, settings_json: JSON.stringify(settings) })
+  if (!Object.values(byMode).some(Boolean)) return res.status(400).json({ error: 'Upload a workflow first' })
   if (!(await comfy.ping())) return res.status(503).json({ error: `ComfyUI is not reachable at ${config.COMFY_URL}` })
   runPending({ runId }).then(
     (r) => console.log(`[run ${runId}] finished: ${JSON.stringify(r)}`),
@@ -275,14 +283,16 @@ app.get('/api/instances/:id/graph', handle(async (req, res) => {
   const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(req.params.id)
   if (!instance) return res.status(404).json({ error: 'Instance not found' })
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(instance.run_id)
-  const workflowId = Number(req.query.workflowId) || run.workflow_id
-  const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
-  if (!w) return res.status(400).json({ error: 'No workflow selected' })
-  const workflow = { ...w, graph: JSON.parse(w.json), bindings: JSON.parse(w.bindings_json) }
-  const settings = { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(JSON.parse(run.settings_json || '{}').qualityMegapixels || {}) } }
+  let workflow = null
+  if (req.query.workflowId) {
+    const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(Number(req.query.workflowId))
+    workflow = w && { ...w, graph: JSON.parse(w.json), bindings: JSON.parse(w.bindings_json) }
+  } else workflow = resolveWorkflows(run).byMode[instance.mode]
+  if (!workflow) return res.status(400).json({ error: `No workflow serves mode ${instance.mode}` })
+  const settings = settingsOf(run)
   const dryClient = { getObjectInfo: () => comfy.getObjectInfo().catch(() => ({})), uploadFile: async ({ filename }) => `(upload) ${filename}` }
   const { graph, values } = await prepareGraph({ client: dryClient, instance, workflow, settings, seed: instance.seed ?? 12345 })
-  res.json({ values, graph })
+  res.json({ workflow: { id: workflow.id, name: workflow.name }, values, graph })
 }))
 
 app.listen(config.PORT, config.HOST, () => console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`))

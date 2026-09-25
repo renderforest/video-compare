@@ -50,7 +50,7 @@ test('detects bindings of the h3 workflow', () => {
   const caps = capabilities(bindings)
   assert.deepEqual(caps.modes, { t2v: true, i2v: true, flf: false, ia2v: false, refi2v: true })
   assert.equal(unsupportedReason({ caps, instance: { mode: 'ia2v', ref_images_json: '[]', ref_audios_json: '[]' } }), 'workflow has no inputs for mode ia2v')
-  assert.match(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a","b"]', ref_audios_json: '[]' } }), /needs 2 image slots/)
+  assert.match(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a","b"]', ref_audios_json: '[]' } }), /needs 2 reference image slots/)
 })
 
 test('builds an i2v graph and prunes the image loader for t2v', () => {
@@ -76,4 +76,23 @@ test('builds an i2v graph and prunes the image loader for t2v', () => {
   assert.equal(t2v['10'], undefined)
   assert.equal(t2v['18'].inputs['ref_images.ref_image_0'], undefined)
   assert.ok(t2v['18'].inputs.prompt)
+})
+
+test('first/last-frame graph: roles come from the inputs the loaders feed', () => {
+  const flv = JSON.parse(fs.readFileSync(new URL('../workflows/H3_FLV.json', import.meta.url), 'utf8'))
+  const { bindings } = detectBindings(flv)
+  const images = bindings.filter((b) => b.key.startsWith('image_'))
+  assert.deepEqual(images.map((b) => [b.node, b.role]), [['10', 'firstFrame'], ['264', 'lastFrame']])
+  const caps = capabilities(bindings)
+  assert.deepEqual(caps.modes, { t2v: true, i2v: true, flf: true, ia2v: false, refi2v: false })
+  const instance = { mode: 'flf', first_frame_url: 'https://x/a.jpg', last_frame_url: 'https://x/b.jpg', ref_images_json: '[]', ref_audios_json: '[]' }
+  const { images: assigned } = assignMedia({ bindings, instance })
+  assert.deepEqual(assigned.map((a) => [a.binding.key, a.url]), [['image_1', 'https://x/a.jpg'], ['image_2', 'https://x/b.jpg']])
+})
+
+test('reference graph: refi2v counts only reference-fed slots', () => {
+  const { bindings } = detectBindings(graph)
+  const caps = capabilities(bindings)
+  assert.equal(caps.referenceSlots, 1)
+  assert.equal(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a"]', ref_audios_json: '[]' } }), null)
 })

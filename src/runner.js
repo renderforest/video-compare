@@ -9,7 +9,7 @@ import db from './db.js'
 import config from './config.js'
 import { ComfyClient, fetchRetry } from './comfy.js'
 import { computeDims } from './dims.js'
-import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses } from './workflow.js'
+import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES } from './workflow.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -174,13 +174,7 @@ const runChecks = ({ probe, instance }) => {
 
 // ---- generation ----
 
-const loadWorkflow = (workflowId) => {
-  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
-  if (!row) throw new Error(`Workflow #${workflowId} not found`)
-  return { ...row, graph: JSON.parse(row.json), bindings: JSON.parse(row.bindings_json) }
-}
-
-const settingsOf = (run) => {
+export const settingsOf = (run) => {
   let settings = {}
   try {
     settings = JSON.parse(run.settings_json || '{}')
@@ -189,6 +183,46 @@ const settingsOf = (run) => {
   }
   return { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(settings.qualityMegapixels || {}) }, ...settings }
 }
+
+const hydrate = (row) => ({ ...row, graph: JSON.parse(row.json), bindings: JSON.parse(row.bindings_json), caps: capabilities(JSON.parse(row.bindings_json)) })
+
+const loadWorkflow = (workflowId) => {
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
+  if (!row) throw new Error(`Workflow #${workflowId} not found`)
+  return hydrate(row)
+}
+
+/**
+ * Which workflow serves each mode for a run: an explicit per-mode choice
+ * (settings.workflowsByMode), else the run's default workflow when it supports
+ * the mode, else the newest uploaded workflow that does. Null = nothing can.
+ * @returns {{ byMode: Record<string, object|null>, sources: Record<string, string|null> }}
+ */
+export const resolveWorkflows = (run) => {
+  const all = db.prepare('SELECT * FROM workflows ORDER BY id DESC').all().map(hydrate)
+  const byId = new Map(all.map((w) => [w.id, w]))
+  const settings = settingsOf(run)
+  const explicit = settings.workflowsByMode || {}
+  const fallback = run.workflow_id ? byId.get(run.workflow_id) : null
+  const byMode = {}
+  const sources = {}
+  for (const mode of MODES) {
+    const chosen = explicit[mode] ? byId.get(Number(explicit[mode])) : null
+    if (chosen) {
+      byMode[mode] = chosen
+      sources[mode] = 'explicit'
+    } else if (fallback && fallback.caps.modes[mode]) {
+      byMode[mode] = fallback
+      sources[mode] = 'default'
+    } else {
+      const auto = all.find((w) => w.caps.modes[mode])
+      byMode[mode] = auto || null
+      sources[mode] = auto ? 'auto' : null
+    }
+  }
+  return { byMode, sources }
+}
+
 
 /** Every value a binding may ask for, for this instance. */
 export const valuesFor = ({ instance, settings, seed }) => {
@@ -283,30 +317,34 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
   try {
     const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
     if (!run) throw new Error(`Run ${runId} not found`)
-    if (!run.workflow_id) throw new Error('No workflow selected for this run')
-    const workflow = loadWorkflow(run.workflow_id)
+    const { byMode } = resolveWorkflows(run)
+    const used = [...new Set(Object.values(byMode).filter(Boolean))]
+    if (!used.length) throw new Error('No workflow uploaded')
     const settings = settingsOf(run)
-    const caps = capabilities(workflow.bindings)
 
     const client = new ComfyClient({ baseUrl: config.COMFY_URL, timeoutMs: config.JOB_TIMEOUT_MS, pollIntervalMs: config.POLL_INTERVAL_MS })
     if (!(await client.ping())) throw new Error(`ComfyUI is not reachable at ${config.COMFY_URL}`)
-    const missing = missingClasses({ graph: workflow.graph, objectInfo: await client.getObjectInfo({ force: true }) })
-    if (missing.length) throw new Error(`ComfyUI is missing node classes used by the workflow: ${missing.join(', ')}`)
+    const objectInfo = await client.getObjectInfo({ force: true })
+    for (const w of used) {
+      const missing = missingClasses({ graph: w.graph, objectInfo })
+      if (missing.length) throw new Error(`ComfyUI is missing node classes used by workflow "${w.name}": ${missing.join(', ')}`)
+    }
 
     const pending = db
       .prepare("SELECT * FROM instances WHERE run_id = ? AND sampled = 1 AND status IN ('pending', 'failed', 'running', 'unsupported') ORDER BY id")
       .all(runId)
 
-    // mark what this workflow cannot replay, so the loop and the UI skip it
+    // pick a workflow per row; mark what no workflow can replay so the loop and the UI skip it
     const setUnsupported = db.prepare("UPDATE instances SET status = 'unsupported', error = ?, workflow_id = ? WHERE id = ?")
     const setPending = db.prepare("UPDATE instances SET status = 'pending', error = NULL WHERE id = ?")
     const runnable = []
     for (const instance of pending) {
-      const reason = unsupportedReason({ caps, instance })
-      if (reason) setUnsupported.run(reason, workflow.id, instance.id)
+      const workflow = byMode[instance.mode]
+      const reason = workflow ? unsupportedReason({ caps: workflow.caps, instance }) : `no uploaded workflow supports mode ${instance.mode}`
+      if (reason) setUnsupported.run(reason, workflow?.id || null, instance.id)
       else {
         if (instance.status === 'unsupported') setPending.run(instance.id)
-        runnable.push(instance)
+        runnable.push({ ...instance, workflow })
       }
     }
 
@@ -321,6 +359,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     let stopped = false
     try {
       for (const instance of runnable) {
+        const { workflow } = instance
         if (stopRequests.has(runId)) {
           stopped = true
           break
@@ -377,7 +416,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     } finally {
       client.close()
     }
-    return { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped }
+    return { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
   } finally {
     activeRuns.delete(runId)
     stopRequests.delete(runId)

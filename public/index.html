@@ -102,8 +102,9 @@
 <main>
   <section class="setup">
     <div class="card">
-      <h2>Workflow (candidate)</h2>
+      <h2>Workflows (candidate)</h2>
       <div class="row">
+        <label>default</label>
         <select id="wfSelect"></select>
         <button id="wfUploadBtn" title="Upload a ComfyUI API-format export">Upload</button>
         <button id="wfInfoBtn" title="Detected bindings and node check">Details</button>
@@ -111,7 +112,8 @@
         <input type="file" id="wfFile" accept=".json" hidden>
       </div>
       <div class="caps" id="wfCaps"></div>
-      <div class="hint">Export from ComfyUI with <b>Save (API Format)</b>. Prompt, seed, duration, aspect ratio, megapixels and image slots are detected automatically from the graph (or use <code>%%PROMPT%%</code>-style placeholders). Check <b>Details</b> before starting.</div>
+      <table class="cov" id="wfModes"></table>
+      <div class="hint">One upload per graph (e.g. reference-image graph, first/last-frame graph). Each mode uses the workflow chosen in its row; <b>auto</b> = the default when it supports the mode, else the newest upload that does. Export from ComfyUI with <b>Save (API Format)</b>; prompt, seed, duration, aspect, megapixels and image slots are detected from the graph.</div>
     </div>
 
     <div class="card">
@@ -257,6 +259,8 @@ $('runList').onclick = async (e) => {
 }
 
 // ---- workflows ----
+const MODE_LABELS = { t2v: 'text → video', i2v: 'first frame → video', flf: 'first + last frame', ia2v: 'first frame + voice-over', refi2v: 'reference images / audios' }
+let modePlan = {}
 async function loadWorkflows (run) {
   workflows = await api('/api/workflows')
   const sel = $('wfSelect')
@@ -264,6 +268,31 @@ async function loadWorkflows (run) {
   sel.innerHTML = workflows.length ? workflows.map((w) => `<option value="${w.id}">${esc(w.name)} (#${w.id})</option>`).join('') : '<option value="">— upload a workflow —</option>'
   if (selected && workflows.some((w) => w.id === selected)) sel.value = selected
   renderCaps()
+  await renderModeTable(run)
+}
+async function renderModeTable (run) {
+  modePlan = currentRunId ? await api(`/api/runs/${currentRunId}/workflows`).catch(() => ({})) : {}
+  const chosen = (run && run.settings && run.settings.workflowsByMode) || {}
+  $('wfModes').innerHTML = '<tr><th>mode</th><th>workflow</th><th>will use</th></tr>' + Object.entries(MODE_LABELS).map(([mode, label]) => {
+    const plan = modePlan[mode]
+    const options = '<option value="">auto</option>' + workflows.map((w) => `<option value="${w.id}" ${Number(chosen[mode]) === w.id ? 'selected' : ''} ${w.capabilities.modes[mode] ? '' : 'disabled'}>${esc(w.name)}${w.capabilities.modes[mode] ? '' : ' (cannot)'}</option>`).join('')
+    const badge = plan ? `<span class="badge yes">${esc(plan.name)} <small>(${plan.source})</small></span>` : '<span class="badge no">none — rows skipped</span>'
+    return `<tr><td>${mode} <small style="color:var(--muted)">${label}</small></td><td><select data-mode="${mode}" style="padding:3px 6px">${options}</select></td><td>${badge}</td></tr>`
+  }).join('')
+  $('wfModes').querySelectorAll('select[data-mode]').forEach((sel) => {
+    sel.onchange = async () => {
+      if (!currentRunId) return
+      const workflowsByMode = {}
+      $('wfModes').querySelectorAll('select[data-mode]').forEach((x) => { if (x.value) workflowsByMode[x.dataset.mode] = Number(x.value) })
+      await put(`/api/runs/${currentRunId}/settings`, { workflowsByMode }).catch((err) => alert(err.message))
+      await renderModeTable({ settings: { workflowsByMode } })
+    }
+  })
+}
+const workflowsByModeFromUi = () => {
+  const out = {}
+  $('wfModes').querySelectorAll('select[data-mode]').forEach((x) => { if (x.value) out[x.dataset.mode] = Number(x.value) })
+  return out
 }
 function renderCaps () {
   const w = workflows.find((x) => x.id === Number($('wfSelect').value))
@@ -276,7 +305,10 @@ function renderCaps () {
 }
 $('wfSelect').onchange = async () => {
   renderCaps()
-  if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: Number($('wfSelect').value) || null }).catch(() => {})
+  if (currentRunId) {
+    await put(`/api/runs/${currentRunId}/settings`, { workflowId: Number($('wfSelect').value) || null }).catch(() => {})
+    await renderModeTable({ settings: { workflowsByMode: workflowsByModeFromUi() } })
+  }
 }
 $('wfUploadBtn').onclick = () => $('wfFile').click()
 $('wfFile').onchange = async () => {
@@ -289,7 +321,7 @@ $('wfFile').onchange = async () => {
   form.append('workflow', file); form.append('name', name || suggested)
   try {
     const res = await api('/api/workflows', { method: 'POST', body: form })
-    await loadWorkflows(); $('wfSelect').value = res.id; renderCaps()
+    await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)); $('wfSelect').value = res.id; renderCaps()
     if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
     const lines = [`Uploaded "${res.name}" ✓`]
     if (res.missingClasses && res.missingClasses.length) lines.push(`⚠ ComfyUI lacks node classes: ${res.missingClasses.join(', ')}`)
@@ -303,7 +335,7 @@ $('wfDeleteBtn').onclick = async () => {
   const id = Number($('wfSelect').value)
   if (!id) return
   if (!confirm('Delete this workflow?')) return
-  try { await api(`/api/workflows/${id}`, { method: 'DELETE' }); $('wfSelect').value = ''; await loadWorkflows() } catch (err) { alert(err.message) }
+  try { await api(`/api/workflows/${id}`, { method: 'DELETE' }); $('wfSelect').value = ''; await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)) } catch (err) { alert(err.message) }
 }
 $('wfInfoBtn').onclick = () => { const id = Number($('wfSelect').value); if (id) showWorkflowDetails(id) }
 
@@ -471,6 +503,7 @@ function cardHtml (i) {
       ${i.flow ? `<span class="badge">${esc(i.flow)}</span>` : ''}
       ${i.duration_ms ? `<span class="badge">${Math.round(i.duration_ms / 1000)}s gen${i.reused ? ' (reused)' : ''}</span>` : ''}
       ${i.seed != null ? `<span class="badge">seed ${i.seed}</span>` : ''}
+      ${i.workflow_id ? `<span class="badge" title="workflow id">wf #${i.workflow_id}</span>` : ''}
       ${probe && probe.width ? `<span class="badge">${probe.width}×${probe.height} ${probe.fps || ''}fps ${probe.duration ? probe.duration.toFixed(1) + 's' : ''}</span>` : ''}
       ${checks.map((c) => `<span class="badge ${c.ok ? 'yes' : 'no'}" title="${esc(c.detail)}">${c.name}</span>`).join('')}
       <span class="badge" title="production project id">#${esc(i.source_id || i.id)}</span>
@@ -520,14 +553,14 @@ window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, 
 window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
 window.showGraph = async (id) => {
   try {
-    const res = await api(`/api/instances/${id}/graph?workflowId=${Number($('wfSelect').value) || ''}`)
-    $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">Graph for row ${id}</h3><b>values</b><pre>${esc(JSON.stringify(res.values, null, 2))}</pre><b>graph (API format)</b><pre>${esc(JSON.stringify(res.graph, null, 2))}</pre><div class="row" style="justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
+    const res = await api(`/api/instances/${id}/graph`)
+    $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">Graph for row ${id} <small style="color:var(--muted)">workflow ${esc(res.workflow.name)}</small></h3><b>values</b><pre>${esc(JSON.stringify(res.values, null, 2))}</pre><b>graph (API format)</b><pre>${esc(JSON.stringify(res.graph, null, 2))}</pre><div class="row" style="justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
     $('textDlg').showModal()
   } catch (err) { alert(err.message) }
 }
 
 // ---- actions ----
-const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 } })
+const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 }, workflowsByMode: workflowsByModeFromUi() })
 $('startBtn').onclick = async () => {
   try {
     await post(`/api/runs/${currentRunId}/start`, { workflowId: Number($('wfSelect').value) || null, settings: settingsPayload() })
