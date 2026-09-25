@@ -17,6 +17,9 @@ import crypto from 'node:crypto'
 
 export const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex')
 
+// bump when detectBindings learns something new; older uploads are re-detected on read
+export const DETECTOR_VERSION = 2
+
 export const onlyNodes = (template) =>
   Object.fromEntries(Object.entries(template).filter(([, v]) => v && typeof v === 'object' && v.class_type))
 

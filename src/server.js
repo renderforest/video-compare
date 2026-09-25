@@ -5,8 +5,8 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf } from './runner.js'
-import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses } from './workflow.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate } from './runner.js'
+import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
 import { ComfyClient } from './comfy.js'
 import { QUALITIES } from './csv.js'
@@ -60,18 +60,15 @@ app.get('/api/health', handle(async (req, res) => {
 // ---- workflows ----
 
 app.get('/api/workflows', (req, res) => {
-  const rows = db.prepare('SELECT id, name, sha1, bindings_json, created_at FROM workflows ORDER BY id DESC').all()
-  res.json(rows.map((w) => {
-    const bindings = JSON.parse(w.bindings_json)
-    return { id: w.id, name: w.name, sha1: w.sha1, createdAt: w.created_at, bindings, capabilities: capabilities(bindings) }
-  }))
+  const rows = db.prepare('SELECT * FROM workflows ORDER BY id DESC').all().map(hydrate)
+  res.json(rows.map((w) => ({ id: w.id, name: w.name, sha1: w.sha1, createdAt: w.created_at, bindings: w.bindings, capabilities: w.caps })))
 })
 
 app.get('/api/workflows/:id', handle(async (req, res) => {
-  const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id)
-  if (!w) return res.status(404).json({ error: 'Workflow not found' })
-  const graph = JSON.parse(w.json)
-  const bindings = JSON.parse(w.bindings_json)
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workflow not found' })
+  const w = hydrate(row)
+  const { graph, bindings } = w
   let missing = null
   try {
     missing = missingClasses({ graph, objectInfo: await comfy.getObjectInfo() })
@@ -87,7 +84,7 @@ app.post('/api/workflows', uploadJson.single('workflow'), handle(async (req, res
   const { graph, bindings, notes } = parseWorkflowUpload(raw)
   const name = req.body.name || (req.file ? req.file.originalname.replace(/\.json$/i, '') : `workflow-${Date.now()}`)
   const json = JSON.stringify(graph)
-  const { lastInsertRowid } = db.prepare('INSERT INTO workflows (name, json, bindings_json, sha1) VALUES (?, ?, ?, ?)').run(name, json, JSON.stringify(bindings), sha1(json))
+  const { lastInsertRowid } = db.prepare('INSERT INTO workflows (name, json, bindings_json, sha1, detector_version) VALUES (?, ?, ?, ?, ?)').run(name, json, JSON.stringify(bindings), sha1(json), DETECTOR_VERSION)
   let missing = []
   try {
     missing = missingClasses({ graph, objectInfo: await comfy.getObjectInfo({ force: true }) })
@@ -107,7 +104,7 @@ app.put('/api/workflows/:id/bindings', handle(async (req, res) => {
   const graph = JSON.parse(w.json)
   const unknown = bindings.filter((b) => !graph[b.node])
   if (unknown.length) return res.status(400).json({ error: `Unknown node ids: ${unknown.map((b) => b.node).join(', ')}` })
-  db.prepare('UPDATE workflows SET bindings_json = ? WHERE id = ?').run(JSON.stringify(bindings), w.id)
+  db.prepare('UPDATE workflows SET bindings_json = ?, detector_version = ? WHERE id = ?').run(JSON.stringify(bindings), DETECTOR_VERSION, w.id)
   res.json({ ok: true, bindings, capabilities: capabilities(bindings) })
 }))
 
@@ -286,7 +283,7 @@ app.get('/api/instances/:id/graph', handle(async (req, res) => {
   let workflow = null
   if (req.query.workflowId) {
     const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(Number(req.query.workflowId))
-    workflow = w && { ...w, graph: JSON.parse(w.json), bindings: JSON.parse(w.bindings_json) }
+    workflow = w && hydrate(w)
   } else workflow = resolveWorkflows(run).byMode[instance.mode]
   if (!workflow) return res.status(400).json({ error: `No workflow serves mode ${instance.mode}` })
   const settings = settingsOf(run)

@@ -85,7 +85,8 @@ db.exec(`
 
 // additive migrations for DBs created before a column existed
 for (const [table, column] of [
-  ['instances', 'note TEXT']
+  ['instances', 'note TEXT'],
+  ['workflows', 'detector_version INTEGER NOT NULL DEFAULT 1']
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)

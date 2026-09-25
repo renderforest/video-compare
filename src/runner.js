@@ -9,7 +9,7 @@ import db from './db.js'
 import config from './config.js'
 import { ComfyClient, fetchRetry } from './comfy.js'
 import { computeDims } from './dims.js'
-import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES } from './workflow.js'
+import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES, DETECTOR_VERSION, detectBindings } from './workflow.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -184,7 +184,16 @@ export const settingsOf = (run) => {
   return { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(settings.qualityMegapixels || {}) }, ...settings }
 }
 
-const hydrate = (row) => ({ ...row, graph: JSON.parse(row.json), bindings: JSON.parse(row.bindings_json), caps: capabilities(JSON.parse(row.bindings_json)) })
+/** Loads a workflow row; bindings detected by an older detector are re-detected once and saved. */
+export const hydrate = (row) => {
+  const graph = JSON.parse(row.json)
+  let bindings = JSON.parse(row.bindings_json)
+  if ((row.detector_version || 1) < DETECTOR_VERSION) {
+    bindings = detectBindings(graph).bindings
+    db.prepare('UPDATE workflows SET bindings_json = ?, detector_version = ? WHERE id = ?').run(JSON.stringify(bindings), DETECTOR_VERSION, row.id)
+  }
+  return { ...row, graph, bindings, caps: capabilities(bindings) }
+}
 
 const loadWorkflow = (workflowId) => {
   const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
