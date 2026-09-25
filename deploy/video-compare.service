@@ -1,0 +1,15 @@
+# /etc/systemd/system/video-compare.service on gen22
+[Unit]
+Description=video-compare review site (MiniMax A/B)
+After=network.target
+
+[Service]
+User=node
+WorkingDirectory=/workspace/video-compare
+EnvironmentFile=/workspace/video-compare/.env
+ExecStart=/usr/bin/env node src/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

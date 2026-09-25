@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Compare</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --border: #e2e5ea; --text: #1c2330;
+    --muted: #6b7482; --accent: #3b6ef6; --ok: #1f9d55; --err: #d64545; --warn: #c98a1b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 20px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  h1 { font-size: 16px; margin: 0 6px 0 0; }
+  h2 { font-size: 12px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  select, input, button, textarea { font: inherit; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--err); border-color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .stats { color: var(--muted); }
+  .stats b { color: var(--text); }
+  .health { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .health.ok::before { content: '● '; color: var(--ok); }
+  .health.bad::before { content: '● '; color: var(--err); }
+  main { padding: 16px 20px; max-width: 1600px; margin: 0 auto; }
+  .setup { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 1100px) { .setup { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .row label { color: var(--muted); }
+  .row input[type=number] { width: 80px; }
+  .row select { min-width: 0; flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .divider { border-top: 1px dashed var(--border); margin: 10px 0; }
+  .big { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .caps { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef1f6; color: var(--muted); white-space: nowrap; }
+  .badge.done, .badge.yes { background: #e2f5e9; color: var(--ok); }
+  .badge.failed, .badge.no { background: #fbe7e7; color: var(--err); }
+  .badge.running, .badge.warn { background: #fdf3df; color: var(--warn); }
+  .badge.unsupported { background: #ececec; color: #777; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  table.cov { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  table.cov th, table.cov td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  table.cov th { color: var(--muted); font-weight: 500; position: sticky; top: 52px; background: var(--card); }
+  table.cov tr.sel td { background: #e8eefc; }
+  table.cov tr:hover td { background: #f0f3f8; cursor: pointer; }
+  table.cov td.num { text-align: right; }
+  table.cov td.empty { color: var(--err); }
+  .covwrap { max-height: 380px; overflow: auto; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+  .filters select { padding: 4px 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(640px, 1fr)); gap: 14px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .vids { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .vids figure { margin: 0; min-width: 0; }
+  .vids figcaption { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .vids video { width: 100%; max-height: 420px; background: #111; border-radius: 6px; display: block; }
+  .placeholder { width: 100%; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; background: #eceef2; border-radius: 6px; color: var(--muted); font-size: 12px; text-align: center; padding: 8px; }
+  .prompt { margin: 8px 0 6px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; font-size: 13px; }
+  .meta { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+  .error { color: var(--err); font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
+  .inputs { display: flex; gap: 6px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+  .inputs img { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); cursor: zoom-in; }
+  .inputs audio { height: 32px; }
+  .inputs small { color: var(--muted); }
+  .controls { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+  .controls button { font-size: 12px; padding: 4px 9px; }
+  .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .note { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
+  .copy { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; }
+  .dd { position: relative; }
+  .dd > button { display: flex; align-items: center; gap: 8px; max-width: 460px; }
+  .dd-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; min-width: 400px; max-height: 60vh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+  .dd-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; white-space: nowrap; }
+  .dd-row:hover { background: #eef1f6; }
+  .dd-row.sel { background: #e8eefc; }
+  .dd-row .dd-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .dd-row .dd-del { border: none; background: none; padding: 2px 4px; color: var(--muted); cursor: pointer; }
+  .dd-row .dd-del:hover { color: var(--err); }
+  dialog { border: none; border-radius: 10px; padding: 0; max-width: 92vw; max-height: 92vh; }
+  dialog img { max-width: 92vw; max-height: 92vh; display: block; }
+  dialog.text { padding: 16px; width: min(900px, 92vw); }
+  dialog.text pre { max-height: 70vh; overflow: auto; font-size: 12px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  .empty { color: var(--muted); padding: 60px 0; text-align: center; }
+  code { background: #eef1f6; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Video Compare</h1>
+  <div class="dd" id="runDd">
+    <button id="runBtn">— no runs —<span class="caret">▾</span></button>
+    <div class="dd-list" id="runList" hidden></div>
+  </div>
+  <span class="stats" id="stats"></span>
+  <span class="health" id="health">checking ComfyUI…</span>
+</header>
+<main>
+  <section class="setup">
+    <div class="card">
+      <h2>Workflow (candidate)</h2>
+      <div class="row">
+        <select id="wfSelect"></select>
+        <button id="wfUploadBtn" title="Upload a ComfyUI API-format export">Upload</button>
+        <button id="wfInfoBtn" title="Detected bindings and node check">Details</button>
+        <button id="wfDeleteBtn" title="Delete selected workflow">✕</button>
+        <input type="file" id="wfFile" accept=".json" hidden>
+      </div>
+      <div class="caps" id="wfCaps"></div>
+      <div class="hint">Export from ComfyUI with <b>Save (API Format)</b>. Prompt, seed, duration, aspect ratio, megapixels and image slots are detected automatically from the graph (or use <code>%%PROMPT%%</code>-style placeholders). Check <b>Details</b> before starting.</div>
+    </div>
+
+    <div class="card">
+      <h2>Generate</h2>
+      <div class="big" id="genSummary">—</div>
+      <div class="hint" id="genDetail"></div>
+      <div class="divider"></div>
+      <div class="row">
+        <label>pass-1 MP</label>
+        <label>480p <input type="number" id="mp480" step="0.05" min="0.05" max="4"></label>
+        <label>720p <input type="number" id="mp720" step="0.05" min="0.05" max="4"></label>
+      </div>
+      <div class="hint">Megapixels sent to <code>ResolutionSelector</code> per quality tier (graphs sized by width/height use the production tables instead).</div>
+      <div class="divider"></div>
+      <button class="primary" id="startBtn" style="width:100%">Start generation</button>
+      <button class="danger" id="stopBtn" style="width:100%; margin-top:8px" hidden>Stop generation</button>
+      <div class="row" style="margin-top:8px">
+        <button id="resetFailedBtn">Retry failed / unsupported</button>
+        <a id="exportBtn" href="#"><button>Export CSV</button></a>
+        <a id="summaryBtn" href="#"><button>Summary CSV</button></a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Runs</h2>
+      <div class="row">
+        <label for="perCell">rows per scenario</label>
+        <input type="number" id="perCell" value="5" min="1" max="500">
+        <button id="resampleBtn">Resample this run</button>
+      </div>
+      <div class="hint">A scenario = mode × quality × aspect × duration bucket × style. Every CSV row is kept; only sampled rows are generated. Raising the number adds rows to each cell.</div>
+      <div class="divider"></div>
+      <div class="row">
+        <input type="file" id="csvFile" accept=".csv">
+        <input type="text" id="csvName" placeholder="run name (optional)" size="14">
+      </div>
+      <button id="uploadCsvBtn" style="width:100%">Upload production CSV → new run</button>
+      <div class="hint">CSV from <code>docs/export.sql</code>. Rows without a production video are skipped; scenario cells with no rows stay empty on purpose.</div>
+    </div>
+  </section>
+
+  <div class="card" id="coverageCard" hidden>
+    <details open>
+      <summary>Coverage by scenario (<span id="covCount"></span>) — click a row to filter</summary>
+      <div class="covwrap">
+        <table class="cov" id="covTable"></table>
+      </div>
+    </details>
+  </div>
+
+  <div class="filters" id="filters">
+    <select data-f="mode"><option value="">mode</option></select>
+    <select data-f="quality"><option value="">quality</option></select>
+    <select data-f="aspect"><option value="">aspect</option></select>
+    <select data-f="duration_bucket"><option value="">duration</option></select>
+    <select data-f="style"><option value="">style</option></select>
+    <select data-f="status"><option value="">status</option></select>
+    <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
+    <label><input type="checkbox" id="onlyProblems"> only failed checks</label>
+    <button id="clearFilters">clear</button>
+    <span class="hint" id="filterCount" style="margin-top:0"></span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden>No runs yet — upload a production CSV above, or run <code>npm run import -- &lt;csv&gt;</code>.</div>
+</main>
+<dialog id="zoom"><img id="zoomImg" alt=""></dialog>
+<dialog id="textDlg" class="text"><div id="textDlgBody"></div></dialog>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let currentRunId = null
+let pollTimer = null
+let workflows = []
+let instances = []
+let coverageRows = []
+let scenarioFilter = null
+const filters = {}
+const cardSig = new Map()
+
+const api = async (url, opts) => {
+  const res = await fetch(url, opts)
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error || res.statusText)
+  return json
+}
+const post = (url, body) => api(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+const put = (url, body) => api(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const runLabel = (r) => `#${r.id} ${r.name} (${r.done || 0}/${r.total || 0})`
+const styleOf = (i) => (i.video_type_name || i.video_type ? `${i.video_type_name || i.video_type} / ` : '') + (i.style_name || 'none')
+
+// ---- health ----
+async function health () {
+  try {
+    const h = await api('/api/health')
+    $('health').className = `health ${h.comfyReachable ? 'ok' : 'bad'}`
+    $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}`
+    if (!$('mp480').value) { $('mp480').value = h.defaults.qualityMegapixels[480]; $('mp720').value = h.defaults.qualityMegapixels[720] }
+  } catch {
+    $('health').className = 'health bad'
+    $('health').textContent = 'server unreachable'
+  }
+}
+health(); setInterval(health, 10000)
+
+// ---- runs ----
+async function loadRuns (selectRunId) {
+  const runs = await api('/api/runs')
+  const prev = selectRunId ?? currentRunId
+  $('empty').hidden = runs.length > 0
+  if (!runs.length) {
+    $('runBtn').innerHTML = '— no runs —<span class="caret">▾</span>'
+    $('runList').innerHTML = ''; $('grid').innerHTML = ''; $('stats').textContent = ''
+    $('coverageCard').hidden = true
+    return
+  }
+  currentRunId = runs.find((r) => r.id === prev) ? prev : runs[0].id
+  $('runList').innerHTML = runs.map((r) => `
+    <div class="dd-row ${r.id === currentRunId ? 'sel' : ''}" data-id="${r.id}">
+      <span class="dd-name">${esc(runLabel(r))}</span>
+      <button class="dd-del" data-del="${r.id}" title="Delete this run and its videos">🗑</button>
+    </div>`).join('')
+  cardSig.clear()
+  scenarioFilter = null
+  await refresh(true)
+}
+$('runBtn').onclick = (e) => { e.stopPropagation(); $('runList').hidden = !$('runList').hidden }
+document.addEventListener('click', () => { $('runList').hidden = true })
+$('runList').onclick = async (e) => {
+  e.stopPropagation()
+  const delId = e.target.dataset && e.target.dataset.del
+  if (delId) {
+    if (!confirm('Delete this run? Its generated videos (not used by other runs) will be removed.')) return
+    try { await api(`/api/runs/${delId}`, { method: 'DELETE' }); if (Number(delId) === currentRunId) currentRunId = null; await loadRuns(currentRunId) } catch (err) { alert(err.message) }
+    return
+  }
+  const row = e.target.closest('.dd-row')
+  if (!row) return
+  $('runList').hidden = true
+  currentRunId = Number(row.dataset.id)
+  await loadRuns(currentRunId)
+}
+
+// ---- workflows ----
+async function loadWorkflows (run) {
+  workflows = await api('/api/workflows')
+  const sel = $('wfSelect')
+  const selected = Number(sel.value) || (run && run.workflow_id) || (workflows[0] && workflows[0].id)
+  sel.innerHTML = workflows.length ? workflows.map((w) => `<option value="${w.id}">${esc(w.name)} (#${w.id})</option>`).join('') : '<option value="">— upload a workflow —</option>'
+  if (selected && workflows.some((w) => w.id === selected)) sel.value = selected
+  renderCaps()
+}
+function renderCaps () {
+  const w = workflows.find((x) => x.id === Number($('wfSelect').value))
+  if (!w) { $('wfCaps').innerHTML = ''; return }
+  const c = w.capabilities
+  $('wfCaps').innerHTML = Object.entries(c.modes).map(([m, ok]) => `<span class="badge ${ok ? 'yes' : 'no'}">${m}</span>`).join('') +
+    `<span class="badge">${c.imageSlots} image slot${c.imageSlots === 1 ? '' : 's'}</span><span class="badge">${c.audioSlots} audio</span>` +
+    `<span class="badge ${c.hasPrompt ? 'yes' : 'no'}">prompt</span><span class="badge ${c.hasDuration ? 'yes' : 'no'}">duration</span>` +
+    `<span class="badge ${c.hasAspect ? 'yes' : 'no'}">aspect</span><span class="badge ${c.hasQuality ? 'yes' : 'no'}">quality</span>`
+}
+$('wfSelect').onchange = async () => {
+  renderCaps()
+  if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: Number($('wfSelect').value) || null }).catch(() => {})
+}
+$('wfUploadBtn').onclick = () => $('wfFile').click()
+$('wfFile').onchange = async () => {
+  const file = $('wfFile').files[0]
+  if (!file) return
+  const suggested = file.name.replace(/\.json$/i, '')
+  const name = prompt('Name for this workflow:', suggested)
+  if (name === null) { $('wfFile').value = ''; return }
+  const form = new FormData()
+  form.append('workflow', file); form.append('name', name || suggested)
+  try {
+    const res = await api('/api/workflows', { method: 'POST', body: form })
+    await loadWorkflows(); $('wfSelect').value = res.id; renderCaps()
+    if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
+    const lines = [`Uploaded "${res.name}" ✓`]
+    if (res.missingClasses && res.missingClasses.length) lines.push(`⚠ ComfyUI lacks node classes: ${res.missingClasses.join(', ')}`)
+    lines.push(...res.notes.map((n) => `⚠ ${n}`))
+    alert(lines.join('\n'))
+    showWorkflowDetails(res.id)
+  } catch (err) { alert(err.message) }
+  $('wfFile').value = ''
+}
+$('wfDeleteBtn').onclick = async () => {
+  const id = Number($('wfSelect').value)
+  if (!id) return
+  if (!confirm('Delete this workflow?')) return
+  try { await api(`/api/workflows/${id}`, { method: 'DELETE' }); $('wfSelect').value = ''; await loadWorkflows() } catch (err) { alert(err.message) }
+}
+$('wfInfoBtn').onclick = () => { const id = Number($('wfSelect').value); if (id) showWorkflowDetails(id) }
+
+async function showWorkflowDetails (id) {
+  const w = await api(`/api/workflows/${id}`)
+  const nodeLabel = (nid) => { const n = w.nodes.find((x) => x.id === String(nid)); return n ? `${n.class}${n.title ? ` “${n.title}”` : ''}` : '?' }
+  const rows = w.bindings.map((b) => `<tr><td><code>${esc(b.key)}</code></td><td>${esc(b.node)}</td><td>${esc(nodeLabel(b.node))}</td><td>${esc(b.input)}${b.via && b.via !== 'value' ? ` <small>(${b.via}${b.field ? ':' + b.field : ''})</small>` : ''}</td><td>${esc(b.role || '')}</td></tr>`).join('')
+  const missing = w.missingClasses === null ? '<span class="badge warn">ComfyUI unreachable — node check skipped</span>'
+    : w.missingClasses.length ? `<span class="badge no">missing on ComfyUI: ${esc(w.missingClasses.join(', '))}</span>` : '<span class="badge yes">all node classes available on ComfyUI</span>'
+  $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">${esc(w.name)} <small style="color:var(--muted)">#${w.id} · ${w.nodes.length} nodes · ${w.sha1.slice(0, 8)}</small></h3>
+    <div class="caps">${Object.entries(w.capabilities.modes).map(([m, ok]) => `<span class="badge ${ok ? 'yes' : 'no'}">${m}</span>`).join('')} ${missing}</div>
+    <p class="hint">Bindings = where each value is written. Keys: prompt, seed, duration, frames, aspect (combo option), megapixels, width, height, crop_width, crop_height, upscale_factor, fps, watermark, output_prefix, image_N / image_url_N (role firstFrame | lastFrame | reference), audio_url_N.</p>
+    <table class="cov"><tr><th>key</th><th>node</th><th>class / title</th><th>input</th><th>role</th></tr>${rows}</table>
+    <div class="divider"></div>
+    <details><summary>Edit bindings (JSON)</summary>
+      <textarea id="bindingsEdit" style="width:100%;height:220px;font-family:monospace;font-size:12px">${esc(JSON.stringify(w.bindings, null, 2))}</textarea>
+      <div class="row" style="margin-top:6px"><button id="bindingsSave" class="primary">Save bindings</button><button id="bindingsReset">Re-detect</button></div>
+    </details>
+    <details><summary>Nodes (${w.nodes.length})</summary><pre>${esc(w.nodes.map((n) => `[${n.id}] ${n.class} ${n.title ? '“' + n.title + '”' : ''} ${JSON.stringify(n.inputs)}`).join('\n'))}</pre></details>
+    <div class="row" style="margin-top:10px;justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
+  $('textDlg').showModal()
+  $('bindingsSave').onclick = async () => {
+    try { const bindings = JSON.parse($('bindingsEdit').value); await put(`/api/workflows/${id}/bindings`, { bindings }); await loadWorkflows(); $('textDlg').close(); alert('Bindings saved') } catch (err) { alert(err.message) }
+  }
+  $('bindingsReset').onclick = async () => {
+    try { await put(`/api/workflows/${id}/bindings`, { reset: true }); await loadWorkflows(); $('textDlg').close(); showWorkflowDetails(id) } catch (err) { alert(err.message) }
+  }
+}
+
+// ---- refresh ----
+async function refresh (full = false) {
+  if (currentRunId == null) return
+  const [run, rows, cov] = await Promise.all([
+    api(`/api/runs/${currentRunId}`),
+    api(`/api/runs/${currentRunId}/instances`),
+    api(`/api/runs/${currentRunId}/coverage`)
+  ])
+  if (full || !workflows.length) {
+    await loadWorkflows(run)
+    if (run.settings && run.settings.qualityMegapixels) {
+      $('mp480').value = run.settings.qualityMegapixels[480] ?? $('mp480').value
+      $('mp720').value = run.settings.qualityMegapixels[720] ?? $('mp720').value
+    }
+    $('perCell').value = run.per_cell || 5
+  }
+  instances = rows
+  coverageRows = cov
+  renderStats(run)
+  renderCoverage()
+  renderFilters()
+  renderGrid()
+  clearTimeout(pollTimer)
+  if (run.active || (run.running || 0) > 0) pollTimer = setTimeout(() => refresh(false), 3000)
+  $('startBtn').disabled = !!run.active
+  $('startBtn').textContent = run.active ? 'Running…' : 'Start generation'
+  $('stopBtn').hidden = !run.active
+  $('exportBtn').href = `/api/runs/${currentRunId}/export.csv`
+  $('summaryBtn').href = `/api/runs/${currentRunId}/summary.csv`
+}
+
+function renderStats (run) {
+  $('runBtn').innerHTML = `${esc(runLabel(run))}<span class="caret">▾</span>`
+  const pending = (run.total || 0) - (run.done || 0) - (run.failed || 0) - (run.running || 0) - (run.unsupported || 0)
+  $('stats').innerHTML = `<b>${run.done || 0}</b> done · <b>${run.failed || 0}</b> failed · <b>${run.unsupported || 0}</b> unsupported · <b>${pending}</b> pending` +
+    ` &nbsp;|&nbsp; ratings: prod <b>${run.rated_prod || 0}</b> / local <b>${run.rated_local || 0}</b> / tie <b>${run.rated_tie || 0}</b>` +
+    ` &nbsp;|&nbsp; ${run.sampled_cells}/${run.cells} cells · pool ${run.pool}`
+  $('genSummary').textContent = run.active ? `Generating… ${run.done || 0}/${run.total}` : pending + (run.failed || 0) ? `${pending + (run.failed || 0)} left to generate` : run.total ? 'All done' : 'Nothing sampled'
+  $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow`
+}
+
+function renderCoverage () {
+  $('coverageCard').hidden = !coverageRows.length
+  $('covCount').textContent = `${coverageRows.length} cells, ${coverageRows.filter((c) => !c.sampled).length} empty`
+  const head = '<tr><th>mode</th><th>quality</th><th>aspect</th><th>duration</th><th>video type</th><th>style</th><th>pool</th><th>sampled</th><th>done</th><th>failed</th><th>unsupp.</th><th>rated</th><th>local wins</th><th>prod wins</th><th>ties</th></tr>'
+  $('covTable').innerHTML = head + coverageRows.map((c) => `<tr data-key="${esc(c.scenario_key)}" class="${scenarioFilter === c.scenario_key ? 'sel' : ''}">
+    <td>${esc(c.mode)}</td><td>${c.quality}</td><td>${esc(c.aspect)}</td><td>${esc(c.duration_bucket)}</td><td>${esc(c.video_type || '-')}</td><td>${esc(c.style)}</td>
+    <td class="num">${c.pool}</td><td class="num ${c.sampled ? '' : 'empty'}">${c.sampled || 0}</td><td class="num">${c.done || 0}</td><td class="num">${c.failed || 0}</td><td class="num">${c.unsupported || 0}</td>
+    <td class="num">${c.rated || 0}</td><td class="num">${c.local_wins || 0}</td><td class="num">${c.prod_wins || 0}</td><td class="num">${c.ties || 0}</td></tr>`).join('')
+}
+$('covTable').onclick = (e) => {
+  const tr = e.target.closest('tr[data-key]')
+  if (!tr) return
+  scenarioFilter = scenarioFilter === tr.dataset.key ? null : tr.dataset.key
+  renderCoverage(); renderGrid()
+}
+
+function renderFilters () {
+  const values = (f) => [...new Set(instances.map((i) => (f === 'style' ? styleOf(i) : i[f])).filter((v) => v != null))].sort()
+  for (const sel of document.querySelectorAll('#filters select[data-f]')) {
+    const f = sel.dataset.f
+    if (f === 'rating') continue
+    const current = sel.value
+    sel.innerHTML = `<option value="">${f.replace('_', ' ')}</option>` + values(f).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')
+    sel.value = current
+  }
+}
+document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; renderGrid() } })
+$('onlyProblems').onchange = renderGrid
+$('clearFilters').onclick = () => { document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = ''; filters[s.dataset.f] = '' }); $('onlyProblems').checked = false; scenarioFilter = null; renderCoverage(); renderGrid() }
+
+function visibleInstances () {
+  return instances.filter((i) => {
+    if (scenarioFilter && i.scenario_key !== scenarioFilter) return false
+    for (const [f, v] of Object.entries(filters)) {
+      if (!v) continue
+      if (f === 'style') { if (styleOf(i) !== v) return false; continue }
+      if (f === 'rating') { if (v === 'unrated' ? i.rating : i.rating !== v) return false; continue }
+      if (String(i[f]) !== v) return false
+    }
+    if ($('onlyProblems').checked) {
+      const checks = i.checks_json ? JSON.parse(i.checks_json) : []
+      if (!checks.some((c) => !c.ok)) return false
+    }
+    return true
+  })
+}
+
+function signature (i) {
+  return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+}
+
+function renderGrid () {
+  const visible = visibleInstances()
+  $('filterCount').textContent = `${visible.length} of ${instances.length} sampled rows`
+  const grid = $('grid')
+  const wanted = new Set(visible.map((i) => `card-${i.id}`))
+  for (const el of [...grid.children]) if (!wanted.has(el.id)) { el.remove(); cardSig.delete(el.id) }
+  let prev = null
+  for (const i of visible) {
+    const id = `card-${i.id}`
+    let el = document.getElementById(id)
+    const sig = signature(i)
+    if (!el) {
+      el = document.createElement('div'); el.className = 'card'; el.id = id
+      el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+    } else if (cardSig.get(id) !== sig) {
+      // re-render only what changed so a playing video is not interrupted
+      el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+    }
+    if (prev ? prev.nextSibling !== el : grid.firstChild !== el) grid.insertBefore(el, prev ? prev.nextSibling : grid.firstChild)
+    prev = el
+  }
+}
+
+function videoOrPlaceholder ({ src, fallback, label, note, side }) {
+  const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
+  return `<figure><figcaption><span>${label}</span>${src ? `<a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</figcaption>` +
+    (src ? `<video controls preload="metadata" loop playsinline data-side="${side}" src="${esc(src)}"${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
+}
+
+function cardHtml (i) {
+  const refs = JSON.parse(i.ref_images_json || '[]')
+  const refAudios = JSON.parse(i.ref_audios_json || '[]')
+  const checks = i.checks_json ? JSON.parse(i.checks_json) : []
+  const probe = i.probe_json ? JSON.parse(i.probe_json) : null
+  const prodSrc = i.prod_video_path ? `/prod/${encodeURIComponent(i.prod_video_path)}` : i.prod_video_url
+  const localSrc = i.output_path ? `/outputs/${encodeURIComponent(i.output_path)}` : null
+  const progress = i.progress && i.progress.max ? ` ${Math.round((i.progress.value / i.progress.max) * 100)}%` : ''
+  const localNote = i.status === 'failed' ? 'failed' : i.status === 'unsupported' ? `unsupported: ${i.error || ''}` : i.status === 'running' ? `generating…${progress}` : 'pending'
+  return `
+    <div class="meta">
+      <span class="badge ${i.status}">${i.status}${i.status === 'running' ? progress : ''}</span>
+      <span class="badge">${esc(i.mode)}</span><span class="badge">${i.quality}p</span><span class="badge">${esc(i.aspect)}${i.aspect_source !== 'row' ? '*' : ''}</span>
+      <span class="badge">${i.duration}s</span><span class="badge">${esc(styleOf(i))}</span>
+      ${i.flow ? `<span class="badge">${esc(i.flow)}</span>` : ''}
+      ${i.duration_ms ? `<span class="badge">${Math.round(i.duration_ms / 1000)}s gen${i.reused ? ' (reused)' : ''}</span>` : ''}
+      ${i.seed != null ? `<span class="badge">seed ${i.seed}</span>` : ''}
+      ${probe && probe.width ? `<span class="badge">${probe.width}×${probe.height} ${probe.fps || ''}fps ${probe.duration ? probe.duration.toFixed(1) + 's' : ''}</span>` : ''}
+      ${checks.map((c) => `<span class="badge ${c.ok ? 'yes' : 'no'}" title="${esc(c.detail)}">${c.name}</span>`).join('')}
+      <span class="badge" title="production project id">#${esc(i.source_id || i.id)}</span>
+    </div>
+    <div class="vids">
+      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod' })}
+      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local' })}
+    </div>
+    <div class="controls">
+      <button onclick="playBoth(${i.id})">▶ play both</button>
+      <button onclick="pauseBoth(${i.id})">❚❚ pause</button>
+      <button onclick="restartBoth(${i.id})">↺ restart</button>
+      <label><input type="checkbox" onchange="muteBoth(${i.id}, this.checked)"> mute</label>
+      <button onclick="showGraph(${i.id})" title="the exact ComfyUI graph for this row">graph</button>
+      ${['failed', 'done', 'unsupported'].includes(i.status) ? `<button onclick="retryOne(${i.id})">regenerate</button>` : ''}
+    </div>
+    <p class="prompt">${esc(i.prompt)} <button class="copy" onclick="copyText(this, ${i.id})" title="Copy prompt">⧉</button></p>
+    ${i.error && i.status === 'failed' ? `<div class="error">${esc(i.error)}</div>` : ''}
+    <div class="inputs">
+      ${i.first_frame_url ? `<img loading="lazy" src="${esc(i.first_frame_url)}" title="first frame" onclick="zoom(this.src)">` : ''}
+      ${i.last_frame_url ? `<img loading="lazy" src="${esc(i.last_frame_url)}" title="last frame" onclick="zoom(this.src)">` : ''}
+      ${refs.map((r) => `<img loading="lazy" src="${esc(r)}" title="reference image" onclick="zoom(this.src)">`).join('')}
+      ${i.audio_url ? `<audio controls preload="none" src="${esc(i.audio_url)}"></audio><small>voice-over @${i.audio_start ?? 0}s</small>` : ''}
+      ${refAudios.map((a) => `<audio controls preload="none" src="${esc(a)}"></audio>`).join('')}
+    </div>
+    <div class="controls rate" data-id="${i.id}">
+      ${['prod', 'local', 'tie'].map((r) => `<button class="${i.rating === r ? 'sel' : ''}" onclick="rate(${i.id}, '${r}', ${i.rating === r})">${r === 'prod' ? 'Prod better' : r === 'local' ? 'Local better' : 'Tie'}</button>`).join('')}
+      ${i.rated_at ? `<small style="color:var(--muted)">rated ${esc(i.rated_at)}</small>` : ''}
+    </div>
+    <input class="note" placeholder="note (optional)" value="${esc(i.note || '')}" onchange="saveNote(${i.id}, this.value)">`
+}
+
+const vids = (id) => [...document.querySelectorAll(`#card-${id} video`)]
+window.playBoth = (id) => { vids(id).forEach((v) => { v.currentTime = 0; v.play().catch(() => {}) }) }
+window.pauseBoth = (id) => vids(id).forEach((v) => v.pause())
+window.restartBoth = (id) => vids(id).forEach((v) => { v.currentTime = 0 })
+window.muteBoth = (id, muted) => vids(id).forEach((v) => { v.muted = muted })
+window.zoom = (src) => { $('zoomImg').src = src; $('zoom').showModal() }
+$('zoom').onclick = () => $('zoom').close()
+window.copyText = async (btn, id) => {
+  const text = (instances.find((i) => i.id === id) || {}).prompt || ''
+  try { await navigator.clipboard.writeText(text) } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() }
+  const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = old }, 1200)
+}
+window.rate = async (id, rating, already) => { await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
+window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, { note }) }
+window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
+window.showGraph = async (id) => {
+  try {
+    const res = await api(`/api/instances/${id}/graph?workflowId=${Number($('wfSelect').value) || ''}`)
+    $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">Graph for row ${id}</h3><b>values</b><pre>${esc(JSON.stringify(res.values, null, 2))}</pre><b>graph (API format)</b><pre>${esc(JSON.stringify(res.graph, null, 2))}</pre><div class="row" style="justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
+    $('textDlg').showModal()
+  } catch (err) { alert(err.message) }
+}
+
+// ---- actions ----
+const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 } })
+$('startBtn').onclick = async () => {
+  try {
+    await post(`/api/runs/${currentRunId}/start`, { workflowId: Number($('wfSelect').value) || null, settings: settingsPayload() })
+    refresh(false)
+  } catch (err) { alert(err.message) }
+}
+$('stopBtn').onclick = async () => {
+  $('stopBtn').disabled = true; $('stopBtn').textContent = 'Stopping…'
+  try { await post(`/api/runs/${currentRunId}/stop`, {}) } catch (err) { alert(err.message) }
+  setTimeout(() => { $('stopBtn').disabled = false; $('stopBtn').textContent = 'Stop generation'; refresh(false) }, 1500)
+}
+$('resetFailedBtn').onclick = async () => { const r = await post(`/api/runs/${currentRunId}/reset-failed`, {}); alert(`${r.reset} rows set back to pending`); refresh(false) }
+$('resampleBtn').onclick = async () => {
+  try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }
+}
+$('uploadCsvBtn').onclick = async () => {
+  const file = $('csvFile').files[0]
+  if (!file) return alert('Choose a CSV file first')
+  const form = new FormData()
+  form.append('csv', file); form.append('perCell', Number($('perCell').value) || 5)
+  if ($('csvName').value) form.append('name', $('csvName').value)
+  const btn = $('uploadCsvBtn'); btn.disabled = true; btn.textContent = 'Importing…'
+  try {
+    const res = await api('/api/upload', { method: 'POST', body: form })
+    const skipped = Object.entries(res.skipped || {}).map(([k, v]) => `${v} ${k}`).join(', ')
+    alert(`Run #${res.runId}: ${res.imported} rows imported, ${res.cells} scenario cells, ${res.sampled} rows sampled${skipped ? `\nskipped: ${skipped}` : ''}`)
+    $('csvFile').value = ''; $('csvName').value = ''
+    await loadRuns(res.runId)
+  } catch (err) { alert(err.message) }
+  btn.disabled = false; btn.textContent = 'Upload production CSV → new run'
+}
+
+loadRuns()
+</script>
+</body>
+</html>

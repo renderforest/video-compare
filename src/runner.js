@@ -1,0 +1,387 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { pipeline } from 'node:stream/promises'
+import { Readable } from 'node:stream'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import db from './db.js'
+import config from './config.js'
+import { ComfyClient, fetchRetry } from './comfy.js'
+import { computeDims } from './dims.js'
+import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses } from './workflow.js'
+
+const execFileAsync = promisify(execFile)
+
+const activeRuns = new Set()
+const stopRequests = new Set()
+const progress = new Map() // instanceId → { value, max, node }
+
+export const isRunActive = (runId) => activeRuns.has(runId)
+export const currentProgress = (instanceId) => progress.get(instanceId) || null
+
+/** Returns true if the run was active and will stop after the current instance. */
+export const requestStop = (runId) => {
+  if (!activeRuns.has(runId)) return false
+  stopRequests.add(runId)
+  return true
+}
+
+// ---- asset cache ----
+
+export const urlCacheName = (url, fallbackExt = '') => {
+  let ext = ''
+  try {
+    ext = path.extname(new URL(url).pathname)
+  } catch {
+    ext = ''
+  }
+  return `${sha1(url)}${ext || fallbackExt}`
+}
+
+/** Downloads a URL into dir once (streamed); later calls reuse the cached file. */
+export const fetchCached = async ({ url, dir, fallbackExt = '' }) => {
+  const filename = urlCacheName(url, fallbackExt)
+  const filePath = path.join(dir, filename)
+  if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) return { filePath, filename }
+  fs.mkdirSync(dir, { recursive: true })
+  const response = await fetchRetry(url, {}, { attempts: 3, action: 'download', timeoutMs: 5 * 60 * 1000 })
+  if (!response.ok) throw new Error(`Failed to download ${url}: ${response.status}`)
+  const tmp = `${filePath}.part`
+  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(tmp))
+  fs.renameSync(tmp, filePath)
+  return { filePath, filename }
+}
+
+const mediaUrls = (instance) => [
+  instance.first_frame_url,
+  instance.last_frame_url,
+  instance.audio_url,
+  ...JSON.parse(instance.ref_images_json || '[]'),
+  ...JSON.parse(instance.ref_audios_json || '[]')
+].filter(Boolean)
+
+/** Archives the production video locally (non-fatal: the UI falls back to the URL). */
+const cacheProdVideo = async (instance) => {
+  if (instance.prod_video_path && fs.existsSync(path.join(config.PROD_DIR, instance.prod_video_path))) return
+  try {
+    const { filename } = await fetchCached({ url: instance.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
+    db.prepare('UPDATE instances SET prod_video_path = ? WHERE id = ?').run(filename, instance.id)
+  } catch (err) {
+    console.error(`[run] prod video download failed for instance ${instance.id}: ${err.message}`)
+  }
+}
+
+/** Downloads every input + production video up front (6 parallel, deduped). */
+export const prefetchAssets = async (instances, { onProgress = () => {} } = {}) => {
+  const jobs = []
+  for (const i of instances) {
+    for (const url of mediaUrls(i)) jobs.push({ url, dir: config.INPUTS_DIR })
+    if (!i.prod_video_path) jobs.push({ url: i.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
+  }
+  const seen = new Set()
+  const unique = jobs.filter((j) => !seen.has(j.url) && seen.add(j.url))
+  let failed = 0
+  let idx = 0
+  let done = 0
+  await Promise.all(
+    Array.from({ length: Math.min(6, unique.length) }, async () => {
+      while (idx < unique.length) {
+        const job = unique[idx++]
+        try {
+          await fetchCached(job)
+        } catch {
+          failed += 1
+        }
+        done += 1
+        onProgress({ done, total: unique.length })
+      }
+    })
+  )
+  return { total: unique.length, failed }
+}
+
+// ---- probing ----
+
+const hasFfprobe = (() => {
+  let cached = null
+  return async () => {
+    if (cached !== null) return cached
+    try {
+      await execFileAsync('ffprobe', ['-version'])
+      cached = true
+    } catch {
+      cached = false
+    }
+    return cached
+  }
+})()
+
+/** Basic stream facts for the checks; ffprobe when present, else the save node's own metadata. */
+export const probeVideo = async ({ filePath, meta }) => {
+  if (await hasFfprobe()) {
+    try {
+      const { stdout } = await execFileAsync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', filePath])
+      const info = JSON.parse(stdout)
+      const video = (info.streams || []).find((s) => s.codec_type === 'video') || {}
+      const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
+      const [num, den] = String(video.r_frame_rate || '0/1').split('/').map(Number)
+      return {
+        width: video.width || null,
+        height: video.height || null,
+        fps: den ? Math.round((num / den) * 100) / 100 : null,
+        frames: Number(video.nb_frames) || null,
+        duration: Number(info.format?.duration) || null,
+        hasAudio: !!audio,
+        sizeBytes: Number(info.format?.size) || fs.statSync(filePath).size,
+        source: 'ffprobe'
+      }
+    } catch {
+      // fall through to node metadata
+    }
+  }
+  const status = meta?._pixaroma_status || {}
+  return {
+    width: status.w || null,
+    height: status.h || null,
+    fps: status.fps || null,
+    frames: status.frames || null,
+    duration: status.duration || null,
+    hasAudio: null,
+    sizeBytes: fs.statSync(filePath).size,
+    source: 'save-node'
+  }
+}
+
+const runChecks = ({ probe, instance }) => {
+  const checks = []
+  if (probe.duration != null) {
+    const ok = Math.abs(probe.duration - instance.duration) <= 1.5
+    checks.push({ name: 'duration', ok, detail: `${probe.duration}s vs ${instance.duration}s requested` })
+  }
+  if (probe.hasAudio != null) {
+    checks.push({ name: 'audio', ok: probe.hasAudio, detail: probe.hasAudio ? 'audio track present' : 'no audio track' })
+  }
+  if (probe.width && probe.height) {
+    const expectPortrait = instance.aspect === '9:16'
+    const expectSquare = instance.aspect === '1:1'
+    const ratio = probe.width / probe.height
+    const ok = expectSquare ? Math.abs(ratio - 1) < 0.1 : expectPortrait ? ratio < 1 : ratio > 1
+    checks.push({ name: 'aspect', ok, detail: `${probe.width}x${probe.height} for ${instance.aspect}` })
+  }
+  return checks
+}
+
+// ---- generation ----
+
+const loadWorkflow = (workflowId) => {
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
+  if (!row) throw new Error(`Workflow #${workflowId} not found`)
+  return { ...row, graph: JSON.parse(row.json), bindings: JSON.parse(row.bindings_json) }
+}
+
+const settingsOf = (run) => {
+  let settings = {}
+  try {
+    settings = JSON.parse(run.settings_json || '{}')
+  } catch {
+    settings = {}
+  }
+  return { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(settings.qualityMegapixels || {}) }, ...settings }
+}
+
+/** Every value a binding may ask for, for this instance. */
+export const valuesFor = ({ instance, settings, seed }) => {
+  const hasImage = instance.mode !== 't2v'
+  const dims = computeDims({ quality: instance.quality, aspect: instance.aspect, duration: instance.duration, hasImage })
+  return {
+    prompt: instance.prompt,
+    seed,
+    duration: instance.duration,
+    frames: dims.adjustedFrameCount,
+    frames_minimax: dims.minimaxFrameCount,
+    aspect: instance.aspect,
+    aspect_ratio: instance.aspect,
+    megapixels: settings.qualityMegapixels[instance.quality] ?? settings.qualityMegapixels[720],
+    quality: instance.quality,
+    width: dims.width,
+    height: dims.height,
+    crop_width: dims.cropWidth,
+    crop_height: dims.cropHeight,
+    upscale_factor: dims.upscaleFactor,
+    fps: dims.fps,
+    frame_count: dims.frameCount,
+    adjusted_frame_count: dims.adjustedFrameCount,
+    audio_start_time: instance.audio_start ?? 0,
+    watermark: false,
+    enable_watermark: false,
+    output_prefix: `vc_${instance.id}`
+  }
+}
+
+const genKeyFor = ({ instance, workflow, values }) =>
+  sha1([workflow.sha1, instance.mode, JSON.stringify(values), instance.first_frame_url, instance.last_frame_url, instance.audio_url, instance.ref_images_json, instance.ref_audios_json].join('|'))
+
+const findReusable = ({ genKey, instanceId }) => {
+  const rows = db
+    .prepare("SELECT id, output_path, seed, duration_ms, probe_json, checks_json FROM instances WHERE gen_key = ? AND status = 'done' AND output_path IS NOT NULL AND id != ? ORDER BY id DESC")
+    .all(genKey, instanceId)
+  return rows.find((r) => fs.existsSync(path.join(config.OUTPUTS_DIR, r.output_path))) || null
+}
+
+/** Builds the final graph for an instance (also used by the CLI `inspect` for dry runs). */
+export const prepareGraph = async ({ client, instance, workflow, settings, seed }) => {
+  const values = valuesFor({ instance, settings, seed })
+  const frameBinding = workflow.bindings.find((b) => b.key === 'frames')
+  if (frameBinding?.kind === 'minimax') values.frames = values.frames_minimax
+
+  const { images, audios } = assignMedia({ bindings: workflow.bindings, instance })
+  for (const b of workflow.bindings) {
+    if (/^(image|audio)(_url)?_\d+$/.test(b.key)) values[b.key] = ''
+  }
+  for (const { binding, url } of [...images, ...audios]) {
+    if (binding.key.includes('_url_')) {
+      values[binding.key] = url
+    } else {
+      const isAudio = binding.key.startsWith('audio')
+      const { filePath, filename } = await fetchCached({ url, dir: config.INPUTS_DIR, fallbackExt: isAudio ? '.mp3' : '.jpg' })
+      values[binding.key] = await client.uploadFile({ filePath, filename, contentType: isAudio ? 'audio/mpeg' : 'image/jpeg' })
+    }
+  }
+
+  const objectInfo = await client.getObjectInfo()
+  const graph = pruneEmptySlots({
+    graph: buildPrompt({ template: workflow.graph, bindings: workflow.bindings, values, objectInfo }),
+    bindings: workflow.bindings,
+    objectInfo
+  })
+  return { graph, values }
+}
+
+const generateInstance = async ({ client, instance, workflow, settings, seed }) => {
+  const { graph } = await prepareGraph({ client, instance, workflow, settings, seed })
+  const promptId = await client.queuePrompt(graph)
+  db.prepare('UPDATE instances SET comfy_prompt_id = ? WHERE id = ?').run(promptId, instance.id)
+
+  await client.waitForCompletion(promptId, { onProgress: (p) => progress.set(instance.id, p) })
+  const output = await client.findVideoOutput(promptId)
+  fs.mkdirSync(config.OUTPUTS_DIR, { recursive: true })
+  const ext = path.extname(output.filename) || '.mp4'
+  const outName = `${instance.id}_${sha1(promptId).slice(0, 8)}${ext}`
+  await client.downloadToFile({ ...output, destPath: path.join(config.OUTPUTS_DIR, outName) })
+  const probe = await probeVideo({ filePath: path.join(config.OUTPUTS_DIR, outName), meta: output })
+  return { outName, probe, checks: runChecks({ probe, instance }) }
+}
+
+/**
+ * Generates every sampled instance of the run that is not done yet, one at a time.
+ * Safe to call again after a crash: 'running' rows are retried, done rows are kept.
+ */
+export const runPending = async ({ runId, onProgress = () => {} }) => {
+  if (activeRuns.has(runId)) throw new Error(`Run ${runId} is already in progress`)
+  activeRuns.add(runId)
+  try {
+    const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
+    if (!run) throw new Error(`Run ${runId} not found`)
+    if (!run.workflow_id) throw new Error('No workflow selected for this run')
+    const workflow = loadWorkflow(run.workflow_id)
+    const settings = settingsOf(run)
+    const caps = capabilities(workflow.bindings)
+
+    const client = new ComfyClient({ baseUrl: config.COMFY_URL, timeoutMs: config.JOB_TIMEOUT_MS, pollIntervalMs: config.POLL_INTERVAL_MS })
+    if (!(await client.ping())) throw new Error(`ComfyUI is not reachable at ${config.COMFY_URL}`)
+    const missing = missingClasses({ graph: workflow.graph, objectInfo: await client.getObjectInfo({ force: true }) })
+    if (missing.length) throw new Error(`ComfyUI is missing node classes used by the workflow: ${missing.join(', ')}`)
+
+    const pending = db
+      .prepare("SELECT * FROM instances WHERE run_id = ? AND sampled = 1 AND status IN ('pending', 'failed', 'running', 'unsupported') ORDER BY id")
+      .all(runId)
+
+    // mark what this workflow cannot replay, so the loop and the UI skip it
+    const setUnsupported = db.prepare("UPDATE instances SET status = 'unsupported', error = ?, workflow_id = ? WHERE id = ?")
+    const setPending = db.prepare("UPDATE instances SET status = 'pending', error = NULL WHERE id = ?")
+    const runnable = []
+    for (const instance of pending) {
+      const reason = unsupportedReason({ caps, instance })
+      if (reason) setUnsupported.run(reason, workflow.id, instance.id)
+      else {
+        if (instance.status === 'unsupported') setPending.run(instance.id)
+        runnable.push(instance)
+      }
+    }
+
+    const prefetch = await prefetchAssets(runnable, { onProgress: (p) => onProgress({ phase: 'prefetch', ...p }) })
+    console.log(`[run ${runId}] prefetched ${prefetch.total - prefetch.failed}/${prefetch.total} assets${prefetch.failed ? ` (${prefetch.failed} failed, retried per instance)` : ''}`)
+
+    await client.connect()
+    const setStatus = db.prepare('UPDATE instances SET status = ?, error = ?, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, workflow_id = ?, attempt = ? WHERE id = ?')
+    let done = 0
+    let failed = 0
+    let reused = 0
+    let stopped = false
+    try {
+      for (const instance of runnable) {
+        if (stopRequests.has(runId)) {
+          stopped = true
+          break
+        }
+        // a fixed seed per instance: retries and re-runs reproduce the same clip
+        const seed = instance.seed ?? crypto.randomInt(0, 2 ** 31)
+        db.prepare("UPDATE instances SET seed = ?, status = 'running', error = NULL WHERE id = ?").run(seed, instance.id)
+        onProgress({ phase: 'generate', instanceId: instance.id, status: 'running' })
+        await cacheProdVideo(instance)
+
+        const values = valuesFor({ instance, settings, seed })
+        const genKey = genKeyFor({ instance, workflow, values })
+        db.prepare('UPDATE instances SET gen_key = ? WHERE id = ?').run(genKey, instance.id)
+        const reusable = findReusable({ genKey, instanceId: instance.id })
+        if (reusable) {
+          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ? WHERE id = ?")
+            .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, instance.id)
+          done += 1
+          reused += 1
+          onProgress({ phase: 'generate', instanceId: instance.id, status: 'done' })
+          continue
+        }
+
+        const startedAt = Date.now()
+        let lastError = null
+        let attempt = 0
+        for (attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            await client.connect()
+            const result = await generateInstance({ client, instance, workflow, settings, seed })
+            setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, instance.id)
+            done += 1
+            lastError = null
+            break
+          } catch (err) {
+            lastError = err
+            console.error(`[run ${runId}] instance ${instance.id} attempt ${attempt} failed: ${err.message}`)
+            if (stopRequests.has(runId)) break
+          }
+        }
+        progress.delete(instance.id)
+        if (lastError && stopRequests.has(runId)) {
+          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, instance.id)
+          onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
+          stopped = true
+          break
+        }
+        if (lastError) {
+          setStatus.run('failed', String(lastError.message || lastError), null, Date.now() - startedAt, null, null, workflow.id, attempt, instance.id)
+          failed += 1
+        }
+        onProgress({ phase: 'generate', instanceId: instance.id, status: lastError ? 'failed' : 'done' })
+      }
+    } finally {
+      client.close()
+    }
+    return { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped }
+  } finally {
+    activeRuns.delete(runId)
+    stopRequests.delete(runId)
+  }
+}
+
+export const interruptComfy = () => new ComfyClient({ baseUrl: config.COMFY_URL }).interrupt()
