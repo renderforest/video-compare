@@ -1,16 +1,14 @@
--- video-compare: production export for the MiniMax (renderforest-pro) A/B
--- Run against the main Postgres (read-only). Two queries:
---   1) coverage counts per scenario cell (run first, adjust the date range until all cells you care about are non-empty)
---   2) the CSV export the tool imports
---
--- Adjust the window here:
---   :from  e.g. '2026-08-25'   (MiniMax H3 replaced wan2.2 for renderforest-pro on 2026-08-07;
---                                voice-over support landed 2026-09-03, reference audio 2026-09-08)
---   :to    e.g. '2026-09-24'
+-- video-compare: production export for the tool (one row per completed renderforest-pro video)
+-- Run the whole file as ONE statement (DBeaver: select all → Execute statement, Ctrl/Cmd+Enter).
+-- Date window: edit the two timestamps in `base` below.
+-- Set the window so every scenario cell you care about has rows (check with coverage.sql first).
 
--- ---------------------------------------------------------------------------
--- Shared base: one row per completed renderforest-pro video with a playable URL
--- ---------------------------------------------------------------------------
+-- After it runs, export the RESULT GRID to CSV:
+--   DBeaver: right-click the result grid → Export data → CSV → keep the header, UTF-8, comma delimiter, quote strings → Next … → Proceed.
+--            (DBeaver exports all rows of the query, not only the fetched page.)
+--   psql:    \copy ( <this query without the trailing semicolon> ) TO 'minimax-prod.csv' WITH (FORMAT csv, HEADER true)
+-- Then upload the CSV in the tool ("Upload production CSV → new run").
+
 WITH base AS (
   SELECT
     avp.id,
@@ -35,8 +33,8 @@ WITH base AS (
     AND avp."videoModel" <> 'renderforest-avatar'
     AND avp.status = 'completed'
     AND avp."videoUrl" IS NOT NULL
-    AND avp."createdAt" >= :from::timestamp
-    AND avp."createdAt" <  :to::timestamp
+    AND avp."createdAt" >= '2026-08-25'::timestamp  -- <<< change the window here
+    AND avp."createdAt" <  '2026-09-26'::timestamp  -- <<< and here
 ),
 media AS (
   SELECT
@@ -118,31 +116,9 @@ final AS (
     AND s.quality IN (480, 720)                -- the only qualities enabled for renderforest-pro
 )
 
--- ---------------------------------------------------------------------------
--- 1) COVERAGE: rows per scenario cell. Run this first.
--- ---------------------------------------------------------------------------
 SELECT
-  mode,
-  quality,
-  COALESCE("aspectRatio", 'auto') AS "aspectRatio",
-  "durationBucket",
-  COALESCE("videoTypeName", '-')  AS "videoType",
-  COALESCE("styleName", 'none')   AS style,
-  count(*)                        AS rows
+  id, "createdAt", "userId", "videoModel", quality, "aspectRatio", "videoDurationSeconds", prompt,
+  "firstFrameUrl", "lastFrameUrl", "voiceOverUrl", "audioStartTime", "referenceImages", "referenceAudios",
+  "styleId", "styleName", "videoType", "videoTypeName", flow, width, height, "videoUrl", mode, "durationBucket"
 FROM final
-GROUP BY 1, 2, 3, 4, 5, 6
-ORDER BY 1, 2, 3, 4, 5, 6;
-
--- ---------------------------------------------------------------------------
--- 2) EXPORT: replace the SELECT above with this one and write it to CSV, e.g. in psql:
---
---   \copy ( <the whole WITH ... final AS (...) block> SELECT ... FROM final ORDER BY id ) TO 'minimax-prod.csv' WITH (FORMAT csv, HEADER true)
---
--- Column order is what the tool expects. Multi-line prompts are fine (CSV-quoted).
--- ---------------------------------------------------------------------------
--- SELECT
---   id, "createdAt", "userId", "videoModel", quality, "aspectRatio", "videoDurationSeconds", prompt,
---   "firstFrameUrl", "lastFrameUrl", "voiceOverUrl", "audioStartTime", "referenceImages", "referenceAudios",
---   "styleId", "styleName", "videoType", "videoTypeName", flow, width, height, "videoUrl", mode, "durationBucket"
--- FROM final
--- ORDER BY id;
+ORDER BY id;
