@@ -1,5 +1,6 @@
 -- video-compare: production export for the tool (one row per completed renderforest-pro video)
--- Run the whole file as ONE statement (DBeaver: select all → Execute statement, Ctrl/Cmd+Enter).
+-- Run it as ONE statement: in DBeaver put the cursor anywhere inside the query and press Ctrl/Cmd+Enter
+-- (or select everything and press Ctrl/Cmd+Enter). Do not use "Execute script" on a partial selection.
 -- Date window: edit the two timestamps in `base` below.
 -- Set the window so every scenario cell you care about has rows (check with coverage.sql first).
 
@@ -115,7 +116,6 @@ final AS (
   WHERE s.reference_video_count = 0            -- reference videos are dropped by the worker; not replayable
     AND s.quality IN (480, 720)                -- the only qualities enabled for renderforest-pro
 )
-
 SELECT
   id, "createdAt", "userId", "videoModel", quality, "aspectRatio", "videoDurationSeconds", prompt,
   "firstFrameUrl", "lastFrameUrl", "voiceOverUrl", "audioStartTime", "referenceImages", "referenceAudios",
