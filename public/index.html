@@ -224,8 +224,10 @@ const styleOf = (i) => (i.video_type_name || i.video_type ? `${i.video_type_name
 async function health () {
   try {
     const h = await api('/api/health')
-    $('health').className = `health ${h.comfyReachable ? 'ok' : 'bad'}`
-    $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}`
+    const diskLow = h.disk && h.disk.freeGb != null && h.disk.freeGb < h.disk.minFreeGb
+    $('health').className = `health ${h.comfyReachable && !diskLow ? 'ok' : 'bad'}`
+    $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}` +
+      (h.disk && h.disk.freeGb != null ? ` · disk ${h.disk.freeGb} GB free${diskLow ? ` (below ${h.disk.minFreeGb} GB — generation paused)` : ''}` : '')
     if (!$('mp480').value) { $('mp480').value = h.defaults.qualityMegapixels[480]; $('mp720').value = h.defaults.qualityMegapixels[720] }
   } catch {
     $('health').className = 'health bad'
@@ -433,7 +435,8 @@ function renderStats (run) {
     ` &nbsp;|&nbsp; ratings: prod <b>${run.rated_prod || 0}</b> / local <b>${run.rated_local || 0}</b> / tie <b>${run.rated_tie || 0}</b>` +
     ` &nbsp;|&nbsp; ${run.sampled_cells}/${run.cells} cells · pool ${run.pool}`
   $('genSummary').textContent = run.active ? `Generating… ${run.done || 0}/${run.total}` : pending + (run.failed || 0) ? `${pending + (run.failed || 0)} left to generate` : run.total ? 'All done' : 'Nothing sampled'
-  $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow`
+  $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow` +
+    (run.stop_reason && !run.active ? ` · ⚠ stopped: ${run.stop_reason}` : '')
 }
 
 function renderCoverage () {

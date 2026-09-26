@@ -8,12 +8,16 @@ import config from './config.js'
 import { ComfyClient, fetchRetry } from './comfy.js'
 import { probeVideo } from './media.js'
 import { emit } from './hooks.js'
+import { lowDiskReason } from './disk.js'
 import { computeDims } from './dims.js'
 import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES, DETECTOR_VERSION, detectBindings } from './workflow.js'
 
 const activeRuns = new Set()
 const stopRequests = new Set()
 const progress = new Map() // instanceId → { value, max, node }
+const stopReasons = new Map() // runId → why the last run loop ended early (e.g. low disk)
+
+export const runStopReason = (runId) => stopReasons.get(runId) || null
 
 export const isRunActive = (runId) => activeRuns.has(runId)
 export const currentProgress = (instanceId) => progress.get(instanceId) || null
@@ -251,6 +255,18 @@ export const prepareGraph = async ({ client, instance, workflow, settings, seed 
   return { graph, values }
 }
 
+// ComfyUI keeps its own copy of every clip in its output folder (same disk on the worker);
+// once we hold the file, ours is removed there. Only files with our prefix are touched.
+const removeComfyCopy = ({ filename, subfolder = '' }) => {
+  if (!config.COMFY_OUTPUT_DIR || !/^vc_/.test(filename)) return
+  const target = path.join(config.COMFY_OUTPUT_DIR, subfolder, filename)
+  try {
+    fs.unlinkSync(target)
+  } catch {
+    // not on this machine or already gone
+  }
+}
+
 const generateInstance = async ({ client, instance, workflow, settings, seed }) => {
   const { graph } = await prepareGraph({ client, instance, workflow, settings, seed })
   const promptId = await client.queuePrompt(graph)
@@ -262,6 +278,7 @@ const generateInstance = async ({ client, instance, workflow, settings, seed }) 
   const ext = path.extname(output.filename) || '.mp4'
   const outName = `${instance.id}_${sha1(promptId).slice(0, 8)}${ext}`
   await client.downloadToFile({ ...output, destPath: path.join(config.OUTPUTS_DIR, outName) })
+  removeComfyCopy(output)
   const probe = await probeVideo({ filePath: path.join(config.OUTPUTS_DIR, outName), meta: output })
   return { outName, probe, checks: runChecks({ probe, instance }) }
 }
@@ -307,6 +324,12 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
       }
     }
 
+    stopReasons.delete(runId)
+    const lowBeforePrefetch = await lowDiskReason()
+    if (lowBeforePrefetch) {
+      stopReasons.set(runId, lowBeforePrefetch)
+      throw new Error(lowBeforePrefetch)
+    }
     const prefetch = await prefetchAssets(runnable, { onProgress: (p) => onProgress({ phase: 'prefetch', ...p }) })
     console.log(`[run ${runId}] prefetched ${prefetch.total - prefetch.failed}/${prefetch.total} assets${prefetch.failed ? ` (${prefetch.failed} failed, retried per instance)` : ''}`)
 
@@ -320,6 +343,13 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
       for (const instance of runnable) {
         const { workflow } = instance
         if (stopRequests.has(runId)) {
+          stopped = true
+          break
+        }
+        const lowDisk = await lowDiskReason()
+        if (lowDisk) {
+          console.error(`[run ${runId}] pausing: ${lowDisk}`)
+          stopReasons.set(runId, lowDisk)
           stopped = true
           break
         }

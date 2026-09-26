@@ -38,7 +38,9 @@ cp .env.example .env    # COMFY_URL, PORT, HOST, JOB_TIMEOUT_MS, PUBLIC_BASE_URL
 npm run serve           # http://<host>:3001
 ```
 
-`ffprobe` on PATH is optional (better output checks). On gen22 the ComfyUI instance is `http://127.0.0.1:8188`.
+On gen22 the ComfyUI instance is `http://127.0.0.1:8188`. Generation refuses to start and pauses itself when the data
+disk has less than `MIN_FREE_DISK_GB` (default 30) free; with `COMFY_OUTPUT_DIR` set, our clips are deleted from
+ComfyUI's output folder once downloaded so the disk is not used twice.
 
 ### CLI
 

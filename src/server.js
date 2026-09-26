@@ -5,7 +5,8 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate } from './runner.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason } from './runner.js'
+import { freeDiskGb, lowDiskReason } from './disk.js'
 import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
 import { ComfyClient } from './comfy.js'
@@ -44,7 +45,7 @@ const runStats = db.prepare(`
   FROM instances WHERE run_id = ?
 `)
 
-const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id) })
+const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id), stop_reason: runStopReason(run.id) })
 
 const handle = (fn) => async (req, res) => {
   try {
@@ -58,7 +59,8 @@ const handle = (fn) => async (req, res) => {
 
 app.get('/api/health', handle(async (req, res) => {
   const bins = await getBinaries()
-  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
+  const freeGb = await freeDiskGb().catch(() => null)
+  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), disk: { freeGb: freeGb == null ? null : Math.round(freeGb * 10) / 10, minFreeGb: config.MIN_FREE_DISK_GB, comfyOutputDir: config.COMFY_OUTPUT_DIR || null }, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
 }))
 
 // thumbnails are made automatically when a clip finishes; this fills in older rows
@@ -254,6 +256,8 @@ app.post('/api/runs/:id/start', handle(async (req, res) => {
   db.prepare('UPDATE runs SET workflow_id = ?, settings_json = ? WHERE id = ?').run(workflowId, JSON.stringify(settings), runId)
   const { byMode } = resolveWorkflows({ ...run, workflow_id: workflowId, settings_json: JSON.stringify(settings) })
   if (!Object.values(byMode).some(Boolean)) return res.status(400).json({ error: 'Upload a workflow first' })
+  const lowDisk = await lowDiskReason()
+  if (lowDisk) return res.status(507).json({ error: `Not starting: ${lowDisk}. Free space (delete old runs) and try again.` })
   if (!(await comfy.ping())) return res.status(503).json({ error: `ComfyUI is not reachable at ${config.COMFY_URL}` })
   runPending({ runId }).then(
     (r) => console.log(`[run ${runId}] finished: ${JSON.stringify(r)}`),

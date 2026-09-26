@@ -30,5 +30,10 @@ export default {
   // quality tier → pass-1 megapixels for graphs that size via ResolutionSelector.
   // Production crops to 854x480 / 1280x720; with the x2 latent upscale in the
   // reference graph 0.1 MP ≈ 480p and 0.2 MP ≈ 720p. Editable per run in the UI.
-  DEFAULT_QUALITY_MEGAPIXELS: { 480: 0.1, 720: 0.2, 1080: 0.45 }
+  DEFAULT_QUALITY_MEGAPIXELS: { 480: 0.1, 720: 0.2, 1080: 0.45 },
+  // generation pauses (and refuses to start) when the data disk has less free space than this
+  MIN_FREE_DISK_GB: Number(process.env.MIN_FREE_DISK_GB) >= 0 ? Number(process.env.MIN_FREE_DISK_GB) : 30,
+  // ComfyUI's output folder on the same machine: our clips (prefix vc_) are removed there once downloaded.
+  // Empty = leave ComfyUI's copies alone.
+  COMFY_OUTPUT_DIR: process.env.COMFY_OUTPUT_DIR || ''
 }
