@@ -23,6 +23,10 @@ test('normalizeRecord infers aspect from the production output when the row has 
   assert.equal(row.duration_bucket, '4-6')
   assert.equal(row.scenario_key, 'i2v | 720 | 9:16 | 4-6 | Anime / Anime')
   assert.equal(normalizeRecord({ videoUrl: 'null', prompt: 'p' }).skip, 'no production video url')
+  const pgNull = normalizeRecord({ videoUrl: 'https://x/v.mp4', quality: '480', videoDurationSeconds: '5', prompt: 'p', referenceImages: '\\N', referenceAudios: '\\N', voiceOverUrl: '\\N', firstFrameUrl: '\\N', lastFrameUrl: '\\N', aspectRatio: '\\N', width: '854', height: '480' }).row
+  assert.equal(pgNull.mode, 't2v')
+  assert.equal(pgNull.aspect, '16:9')
+  assert.equal(pgNull.ref_images_json, '[]')
 })
 
 test('dims follow the production worker tables', () => {
