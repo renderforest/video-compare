@@ -156,7 +156,7 @@
   </section>
 
   <div class="card" id="coverageCard" hidden>
-    <details open>
+    <details>
       <summary>Coverage by scenario (<span id="covCount"></span>) — click a row to filter</summary>
       <div class="covwrap">
         <table class="cov" id="covTable"></table>
@@ -172,9 +172,17 @@
     <select data-f="style"><option value="">style</option></select>
     <select data-f="status"><option value="">status</option></select>
     <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
+    <input type="search" id="searchBox" placeholder="prompt or project id" size="18">
     <label><input type="checkbox" id="onlyProblems"> only failed checks</label>
     <button id="clearFilters">clear</button>
     <span class="hint" id="filterCount" style="margin-top:0"></span>
+  </div>
+  <div class="filters" id="pager">
+    <button id="prevPage">‹ prev</button>
+    <span id="pageInfo" class="hint" style="margin-top:0"></span>
+    <button id="nextPage">next ›</button>
+    <label>per page <select id="pageSize"><option>12</option><option selected>24</option><option>48</option><option>96</option></select></label>
+    <span class="hint" style="margin-top:0">keys: ← → pages · videos load only while on screen</span>
   </div>
 
   <div class="grid" id="grid"></div>
@@ -188,10 +196,15 @@ const $ = (id) => document.getElementById(id)
 let currentRunId = null
 let pollTimer = null
 let workflows = []
-let instances = []
+let instances = []            // rows of the current page only
 let coverageRows = []
+let coverageLoadedAt = 0
 let scenarioFilter = null
-const filters = {}
+// default view: finished, not yet rated — the rows a reviewer has to act on
+const DEFAULT_FILTERS = { status: 'done', rating: 'unrated' }
+let filters = { ...DEFAULT_FILTERS }
+let page = 1
+let pageInfo = { total: 0, pages: 1 }
 const cardSig = new Map()
 
 const api = async (url, opts) => {
@@ -239,6 +252,8 @@ async function loadRuns (selectRunId) {
     </div>`).join('')
   cardSig.clear()
   scenarioFilter = null
+  filters = { ...DEFAULT_FILTERS }
+  page = 1
   await refresh(true)
 }
 $('runBtn').onclick = (e) => { e.stopPropagation(); $('runList').hidden = !$('runList').hidden }
@@ -366,12 +381,22 @@ async function showWorkflowDetails (id) {
 }
 
 // ---- refresh ----
+const instanceQuery = () => {
+  const q = new URLSearchParams({ page, pageSize: $('pageSize').value })
+  for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v)
+  if (scenarioFilter) q.set('scenario', scenarioFilter)
+  if ($('onlyProblems').checked) q.set('problems', '1')
+  if ($('searchBox').value.trim()) q.set('q', $('searchBox').value.trim())
+  return q.toString()
+}
+
 async function refresh (full = false) {
   if (currentRunId == null) return
-  const [run, rows, cov] = await Promise.all([
+  const coverageStale = full || Date.now() - coverageLoadedAt > 30000
+  const [run, pageData, cov] = await Promise.all([
     api(`/api/runs/${currentRunId}`),
-    api(`/api/runs/${currentRunId}/instances`),
-    api(`/api/runs/${currentRunId}/coverage`)
+    api(`/api/runs/${currentRunId}/instances?${instanceQuery()}`),
+    coverageStale ? api(`/api/runs/${currentRunId}/coverage`) : null
   ])
   if (full || !workflows.length) {
     await loadWorkflows(run)
@@ -380,15 +405,19 @@ async function refresh (full = false) {
       $('mp720').value = run.settings.qualityMegapixels[720] ?? $('mp720').value
     }
     $('perCell').value = run.per_cell || 5
+    await loadFilterValues()
   }
-  instances = rows
-  coverageRows = cov
+  instances = pageData.rows
+  pageInfo = pageData
+  if (cov) {
+    coverageRows = cov
+    coverageLoadedAt = Date.now()
+    renderCoverage()
+  }
   renderStats(run)
-  renderCoverage()
-  renderFilters()
   renderGrid()
   clearTimeout(pollTimer)
-  if (run.active || (run.running || 0) > 0) pollTimer = setTimeout(() => refresh(false), 3000)
+  if (run.active || (run.running || 0) > 0) pollTimer = setTimeout(() => refresh(false), 5000)
   $('startBtn').disabled = !!run.active
   $('startBtn').textContent = run.active ? 'Running…' : 'Start generation'
   $('stopBtn').hidden = !run.active
@@ -419,50 +448,72 @@ $('covTable').onclick = (e) => {
   const tr = e.target.closest('tr[data-key]')
   if (!tr) return
   scenarioFilter = scenarioFilter === tr.dataset.key ? null : tr.dataset.key
-  renderCoverage(); renderGrid()
+  page = 1
+  renderCoverage(); refresh(false)
 }
 
-function renderFilters () {
-  const values = (f) => [...new Set(instances.map((i) => (f === 'style' ? styleOf(i) : i[f])).filter((v) => v != null))].sort()
+async function loadFilterValues () {
+  const values = await api(`/api/runs/${currentRunId}/filters`)
   for (const sel of document.querySelectorAll('#filters select[data-f]')) {
     const f = sel.dataset.f
-    if (f === 'rating') continue
-    const current = sel.value
-    sel.innerHTML = `<option value="">${f.replace('_', ' ')}</option>` + values(f).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')
-    sel.value = current
+    if (f === 'rating') { sel.value = filters.rating || ''; continue }
+    const list = values[f] || []
+    const opts = list.map((v) => (typeof v === 'object'
+      ? `<option value="${esc(v.value ?? v.v)}">${esc(v.label ?? v.v)}${v.count != null || v.c != null ? ` (${v.count ?? v.c})` : ''}</option>`
+      : `<option value="${esc(v)}">${esc(v)}</option>`)).join('')
+    sel.innerHTML = `<option value="">${f.replace('_', ' ')}</option>` + opts
+    sel.value = filters[f] || ''
   }
 }
-document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; renderGrid() } })
-$('onlyProblems').onchange = renderGrid
-$('clearFilters').onclick = () => { document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = ''; filters[s.dataset.f] = '' }); $('onlyProblems').checked = false; scenarioFilter = null; renderCoverage(); renderGrid() }
-
-function visibleInstances () {
-  return instances.filter((i) => {
-    if (scenarioFilter && i.scenario_key !== scenarioFilter) return false
-    for (const [f, v] of Object.entries(filters)) {
-      if (!v) continue
-      if (f === 'style') { if (styleOf(i) !== v) return false; continue }
-      if (f === 'rating') { if (v === 'unrated' ? i.rating : i.rating !== v) return false; continue }
-      if (String(i[f]) !== v) return false
-    }
-    if ($('onlyProblems').checked) {
-      const checks = i.checks_json ? JSON.parse(i.checks_json) : []
-      if (!checks.some((c) => !c.ok)) return false
-    }
-    return true
-  })
+document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; refresh(false) } })
+$('onlyProblems').onchange = () => { page = 1; refresh(false) }
+let searchTimer = null
+$('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
+$('clearFilters').onclick = () => {
+  filters = {}
+  document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = '' })
+  $('onlyProblems').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
+  renderCoverage(); refresh(false)
 }
+$('prevPage').onclick = () => { if (page > 1) { page -= 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('pageSize').onchange = () => { page = 1; refresh(false) }
+document.addEventListener('keydown', (e) => {
+  if (e.target.matches('input, textarea, select') || $('textDlg').open) return
+  if (e.key === 'ArrowLeft') $('prevPage').click()
+  if (e.key === 'ArrowRight') $('nextPage').click()
+})
 
 function signature (i) {
   return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
+// Videos get their src only while near the viewport, and drop it again when scrolled away,
+// so a page of 24 cards never holds more than a few decoders in memory.
+const videoObserver = new IntersectionObserver((entries) => {
+  for (const { target, isIntersecting } of entries) {
+    if (isIntersecting) {
+      if (!target.src && target.dataset.src) target.src = target.dataset.src
+    } else if (target.src) {
+      target.pause()
+      target.removeAttribute('src')
+      target.load()
+    }
+  }
+}, { rootMargin: '400px 0px' })
+
 function renderGrid () {
-  const visible = visibleInstances()
-  $('filterCount').textContent = `${visible.length} of ${instances.length} sampled rows`
+  const visible = instances
+  const from = pageInfo.total ? (pageInfo.page - 1) * pageInfo.pageSize + 1 : 0
+  const to = from ? from + visible.length - 1 : 0
+  $('filterCount').textContent = `${pageInfo.total} rows match`
+  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('searchBox').value.trim()
+  $('pageInfo').textContent = pageInfo.total ? `${from}–${to} of ${pageInfo.total} · page ${pageInfo.page}/${pageInfo.pages}` : filtered ? 'no rows match these filters (default view is done + unrated — press clear to see everything)' : 'no rows'
+  $('prevPage').disabled = pageInfo.page <= 1
+  $('nextPage').disabled = pageInfo.page >= pageInfo.pages
   const grid = $('grid')
   const wanted = new Set(visible.map((i) => `card-${i.id}`))
-  for (const el of [...grid.children]) if (!wanted.has(el.id)) { el.remove(); cardSig.delete(el.id) }
+  for (const el of [...grid.children]) if (!wanted.has(el.id)) { el.querySelectorAll('video').forEach((v) => videoObserver.unobserve(v)); el.remove(); cardSig.delete(el.id) }
   let prev = null
   for (const i of visible) {
     const id = `card-${i.id}`
@@ -471,9 +522,12 @@ function renderGrid () {
     if (!el) {
       el = document.createElement('div'); el.className = 'card'; el.id = id
       el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+      el.querySelectorAll('video').forEach((v) => videoObserver.observe(v))
     } else if (cardSig.get(id) !== sig) {
       // re-render only what changed so a playing video is not interrupted
+      el.querySelectorAll('video').forEach((v) => videoObserver.unobserve(v))
       el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+      el.querySelectorAll('video').forEach((v) => videoObserver.observe(v))
     }
     if (prev ? prev.nextSibling !== el : grid.firstChild !== el) grid.insertBefore(el, prev ? prev.nextSibling : grid.firstChild)
     prev = el
@@ -483,7 +537,7 @@ function renderGrid () {
 function videoOrPlaceholder ({ src, fallback, label, note, side }) {
   const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
   return `<figure><figcaption><span>${label}</span>${src ? `<a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</figcaption>` +
-    (src ? `<video controls preload="metadata" loop playsinline data-side="${side}" src="${esc(src)}"${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
+    (src ? `<video controls preload="metadata" loop playsinline data-side="${side}" data-src="${esc(src)}"${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
 }
 
 function cardHtml (i) {
@@ -537,7 +591,7 @@ function cardHtml (i) {
 }
 
 const vids = (id) => [...document.querySelectorAll(`#card-${id} video`)]
-window.playBoth = (id) => { vids(id).forEach((v) => { v.currentTime = 0; v.play().catch(() => {}) }) }
+window.playBoth = (id) => { vids(id).forEach((v) => { if (!v.src && v.dataset.src) v.src = v.dataset.src; v.currentTime = 0; v.play().catch(() => {}) }) }
 window.pauseBoth = (id) => vids(id).forEach((v) => v.pause())
 window.restartBoth = (id) => vids(id).forEach((v) => { v.currentTime = 0 })
 window.muteBoth = (id, muted) => vids(id).forEach((v) => { v.muted = muted })

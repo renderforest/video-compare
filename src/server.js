@@ -139,13 +139,68 @@ app.get('/api/runs/:id/workflows', (req, res) => {
   res.json(Object.fromEntries(MODES.map((m) => [m, byMode[m] ? { id: byMode[m].id, name: byMode[m].name, source: sources[m] } : null])))
 })
 
+// Filtered + paginated page of sampled rows. Without `page` the full list is returned (CLI / scripts).
+const instanceFilters = (query) => {
+  const where = ['run_id = ?', 'sampled = 1']
+  const params = [Number(query.runId)]
+  const eq = (column, value) => {
+    if (value === undefined || value === '') return
+    where.push(`${column} = ?`)
+    params.push(value)
+  }
+  eq('mode', query.mode)
+  eq('quality', query.quality && Number(query.quality))
+  eq('aspect', query.aspect)
+  eq('duration_bucket', query.duration_bucket)
+  eq('status', query.status)
+  eq('scenario_key', query.scenario)
+  if (query.style) {
+    where.push("(COALESCE(video_type_name, video_type, '') || '|' || COALESCE(style_name, 'none')) = ?")
+    params.push(query.style)
+  }
+  if (query.rating === 'unrated') where.push('rating IS NULL')
+  else if (query.rating) {
+    where.push('rating = ?')
+    params.push(query.rating)
+  }
+  if (query.problems === '1') where.push("checks_json LIKE '%\"ok\":false%'")
+  if (query.q) {
+    where.push('(prompt LIKE ? OR source_id = ?)')
+    params.push(`%${query.q}%`, query.q)
+  }
+  return { where: where.join(' AND '), params }
+}
+
 app.get('/api/runs/:id/instances', (req, res) => {
-  const all = req.query.all === '1'
+  if (req.query.all === '1') {
+    return res.json(db.prepare('SELECT * FROM instances WHERE run_id = ? ORDER BY scenario_key, id').all(req.params.id))
+  }
+  const { where, params } = instanceFilters({ ...req.query, runId: req.params.id })
+  const withProgress = (i) => ({ ...i, progress: i.status === 'running' ? currentProgress(i.id) : null })
+  if (req.query.page === undefined) {
+    return res.json(db.prepare(`SELECT * FROM instances WHERE ${where} ORDER BY scenario_key, id`).all(...params).map(withProgress))
+  }
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize) || 24))
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM instances WHERE ${where}`).get(...params).c
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(pages, Math.max(1, Number(req.query.page) || 1))
   const rows = db
-    .prepare(`SELECT * FROM instances WHERE run_id = ? ${all ? '' : 'AND sampled = 1'} ORDER BY scenario_key, id`)
-    .all(req.params.id)
-    .map((i) => ({ ...i, progress: i.status === 'running' ? currentProgress(i.id) : null }))
-  res.json(rows)
+    .prepare(`SELECT * FROM instances WHERE ${where} ORDER BY scenario_key, id LIMIT ? OFFSET ?`)
+    .all(...params, pageSize, (page - 1) * pageSize)
+    .map(withProgress)
+  res.json({ total, page, pages, pageSize, rows })
+})
+
+// distinct filter values, computed in SQL so the browser never loads the whole run
+app.get('/api/runs/:id/filters', (req, res) => {
+  const runId = Number(req.params.id)
+  const distinct = (expr) => db.prepare(`SELECT DISTINCT ${expr} AS v FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY 1`).all(runId).map((r) => r.v).filter((v) => v != null)
+  const styles = db
+    .prepare("SELECT COALESCE(video_type_name, video_type, '') AS vt, COALESCE(style_name, 'none') AS st, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1, 2 ORDER BY 1, 2")
+    .all(runId)
+    .map((r) => ({ value: `${r.vt}|${r.st}`, label: r.vt ? `${r.vt} / ${r.st}` : r.st, count: r.c }))
+  const statuses = db.prepare('SELECT status AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1').all(runId)
+  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, status: statuses })
 })
 
 app.post('/api/upload', uploadCsv.single('csv'), handle(async (req, res) => {
