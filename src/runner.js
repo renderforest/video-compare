@@ -3,15 +3,13 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import db from './db.js'
 import config from './config.js'
 import { ComfyClient, fetchRetry } from './comfy.js'
+import { probeVideo } from './media.js'
+import { emit } from './hooks.js'
 import { computeDims } from './dims.js'
 import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES, DETECTOR_VERSION, detectBindings } from './workflow.js'
-
-const execFileAsync = promisify(execFile)
 
 const activeRuns = new Set()
 const stopRequests = new Set()
@@ -65,8 +63,10 @@ const mediaUrls = (instance) => [
 const cacheProdVideo = async (instance) => {
   if (instance.prod_video_path && fs.existsSync(path.join(config.PROD_DIR, instance.prod_video_path))) return
   try {
-    const { filename } = await fetchCached({ url: instance.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
-    db.prepare('UPDATE instances SET prod_video_path = ? WHERE id = ?').run(filename, instance.id)
+    const { filename, filePath } = await fetchCached({ url: instance.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
+    // the same production clip may be cached for several rows (re-sampled runs): tag them all
+    db.prepare('UPDATE instances SET prod_video_path = ? WHERE id = ? OR prod_video_url = ?').run(filename, instance.id, instance.prod_video_url)
+    await emit('prod:cached', { instance: { ...instance, prod_video_path: filename }, filePath })
   } catch (err) {
     console.error(`[run] prod video download failed for instance ${instance.id}: ${err.message}`)
   }
@@ -101,57 +101,7 @@ export const prefetchAssets = async (instances, { onProgress = () => {} } = {}) 
   return { total: unique.length, failed }
 }
 
-// ---- probing ----
-
-const hasFfprobe = (() => {
-  let cached = null
-  return async () => {
-    if (cached !== null) return cached
-    try {
-      await execFileAsync('ffprobe', ['-version'])
-      cached = true
-    } catch {
-      cached = false
-    }
-    return cached
-  }
-})()
-
-/** Basic stream facts for the checks; ffprobe when present, else the save node's own metadata. */
-export const probeVideo = async ({ filePath, meta }) => {
-  if (await hasFfprobe()) {
-    try {
-      const { stdout } = await execFileAsync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', filePath])
-      const info = JSON.parse(stdout)
-      const video = (info.streams || []).find((s) => s.codec_type === 'video') || {}
-      const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
-      const [num, den] = String(video.r_frame_rate || '0/1').split('/').map(Number)
-      return {
-        width: video.width || null,
-        height: video.height || null,
-        fps: den ? Math.round((num / den) * 100) / 100 : null,
-        frames: Number(video.nb_frames) || null,
-        duration: Number(info.format?.duration) || null,
-        hasAudio: !!audio,
-        sizeBytes: Number(info.format?.size) || fs.statSync(filePath).size,
-        source: 'ffprobe'
-      }
-    } catch {
-      // fall through to node metadata
-    }
-  }
-  const status = meta?._pixaroma_status || {}
-  return {
-    width: status.w || null,
-    height: status.h || null,
-    fps: status.fps || null,
-    frames: status.frames || null,
-    duration: status.duration || null,
-    hasAudio: null,
-    sizeBytes: fs.statSync(filePath).size,
-    source: 'save-node'
-  }
-}
+// ---- checks ----
 
 const runChecks = ({ probe, instance }) => {
   const checks = []
@@ -267,7 +217,7 @@ const genKeyFor = ({ instance, workflow, values }) =>
 
 const findReusable = ({ genKey, instanceId }) => {
   const rows = db
-    .prepare("SELECT id, output_path, seed, duration_ms, probe_json, checks_json FROM instances WHERE gen_key = ? AND status = 'done' AND output_path IS NOT NULL AND id != ? ORDER BY id DESC")
+    .prepare("SELECT id, output_path, seed, duration_ms, probe_json, checks_json, output_thumb FROM instances WHERE gen_key = ? AND status = 'done' AND output_path IS NOT NULL AND id != ? ORDER BY id DESC")
     .all(genKey, instanceId)
   return rows.find((r) => fs.existsSync(path.join(config.OUTPUTS_DIR, r.output_path))) || null
 }
@@ -384,8 +334,8 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
         db.prepare('UPDATE instances SET gen_key = ? WHERE id = ?').run(genKey, instance.id)
         const reusable = findReusable({ genKey, instanceId: instance.id })
         if (reusable) {
-          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ? WHERE id = ?")
-            .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, instance.id)
+          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ?, output_thumb = ? WHERE id = ?")
+            .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, reusable.output_thumb, instance.id)
           done += 1
           reused += 1
           onProgress({ phase: 'generate', instanceId: instance.id, status: 'done' })
@@ -402,6 +352,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
             setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, instance.id)
             done += 1
             lastError = null
+            await emit('generation:finished', { instance, outputPath: path.join(config.OUTPUTS_DIR, result.outName) })
             break
           } catch (err) {
             lastError = err
@@ -425,7 +376,9 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     } finally {
       client.close()
     }
-    return { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
+    const summary = { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
+    await emit('run:finished', { runId, summary })
+    return summary
   } finally {
     activeRuns.delete(runId)
     stopRequests.delete(runId)

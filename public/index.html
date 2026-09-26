@@ -132,6 +132,7 @@
       <button class="danger" id="stopBtn" style="width:100%; margin-top:8px" hidden>Stop generation</button>
       <div class="row" style="margin-top:8px">
         <button id="resetFailedBtn">Retry failed / unsupported</button>
+        <button id="thumbsBtn" title="Make posters for clips that have none yet">Thumbnails</button>
         <a id="exportBtn" href="#"><button>Export CSV</button></a>
         <a id="summaryBtn" href="#"><button>Summary CSV</button></a>
       </div>
@@ -485,7 +486,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function signature (i) {
-  return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
 // Videos get their src only while near the viewport, and drop it again when scrolled away,
@@ -534,10 +535,12 @@ function renderGrid () {
   }
 }
 
-function videoOrPlaceholder ({ src, fallback, label, note, side }) {
+function videoOrPlaceholder ({ src, fallback, label, note, side, poster }) {
   const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
+  // with a poster the browser needs nothing until play: no metadata fetch, no decoder
+  const preload = poster ? 'none' : 'metadata'
   return `<figure><figcaption><span>${label}</span>${src ? `<a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</figcaption>` +
-    (src ? `<video controls preload="metadata" loop playsinline data-side="${side}" data-src="${esc(src)}"${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
+    (src ? `<video controls preload="${preload}" loop playsinline data-side="${side}" data-src="${esc(src)}"${poster ? ` poster="${esc(poster)}"` : ''}${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
 }
 
 function cardHtml (i) {
@@ -563,8 +566,8 @@ function cardHtml (i) {
       <span class="badge" title="production project id">#${esc(i.source_id || i.id)}</span>
     </div>
     <div class="vids">
-      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod' })}
-      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local' })}
+      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod', poster: i.prod_thumb ? `/thumbs/${encodeURIComponent(i.prod_thumb)}` : null })}
+      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local', poster: i.output_thumb ? `/thumbs/${encodeURIComponent(i.output_thumb)}` : null })}
     </div>
     <div class="controls">
       <button onclick="playBoth(${i.id})">▶ play both</button>
@@ -626,6 +629,7 @@ $('stopBtn').onclick = async () => {
   try { await post(`/api/runs/${currentRunId}/stop`, {}) } catch (err) { alert(err.message) }
   setTimeout(() => { $('stopBtn').disabled = false; $('stopBtn').textContent = 'Stop generation'; refresh(false) }, 1500)
 }
+$('thumbsBtn').onclick = async () => { try { await post(`/api/runs/${currentRunId}/thumbnails`, {}); alert('Thumbnail backfill started') } catch (err) { alert(err.message) } }
 $('resetFailedBtn').onclick = async () => { const r = await post(`/api/runs/${currentRunId}/reset-failed`, {}); alert(`${r.reset} rows set back to pending`); refresh(false) }
 $('resampleBtn').onclick = async () => {
   try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }

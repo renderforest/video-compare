@@ -18,8 +18,13 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
 4. **Generate**: sampled rows run one at a time on ComfyUI (single GPU) with a fixed seed per row,
    the output is streamed to `data/outputs/`, the old clip is archived in `data/prod/`, and ffprobe (if
    installed) records dims/fps/audio for sanity badges. Resumable, one automatic retry, Stop button.
-5. **Review & export**: filter by scenario, play both clips in sync, rate, add notes; export per-row and
-   per-cell summary CSVs.
+5. **Review & export**: rows are paged and filtered server-side (default view: done + unrated), both clips
+   play in sync, rate, add notes; export per-row and per-cell summary CSVs.
+
+Thumbnails: when a clip finishes (hook `generation:finished` in `src/hooks.js`) and when a production clip is
+cached (`prod:cached`), a 320 px JPEG poster is written to `data/thumbs/` with ffmpeg (system binary, else the
+bundled `ffmpeg-static`). Posters let the review page show every card without loading a video. Rows from before
+the feature are back-filled on server start, or with the **Thumbnails** button / `POST /api/runs/:id/thumbnails`.
 
 Mode is derived exactly like the production worker (`ai-workers-service getWorkflowConfig`):
 reference media → `refi2v`, voice-over audio → `ia2v`, last frame → `flf`, first frame → `i2v`, else `t2v`.

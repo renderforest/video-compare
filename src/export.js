@@ -39,6 +39,8 @@ export const exportInstancesCsv = (runId) => {
         referenceAudios: JSON.parse(i.ref_audios_json || '[]').join('|'),
         prodVideoUrl: i.prod_video_url,
         localVideoUrl: localUrl(i),
+        localThumbUrl: i.output_thumb ? `${config.PUBLIC_BASE_URL}/thumbs/${encodeURIComponent(i.output_thumb)}` : '',
+        prodThumbUrl: i.prod_thumb ? `${config.PUBLIC_BASE_URL}/thumbs/${encodeURIComponent(i.prod_thumb)}` : '',
         status: i.status,
         error: i.error,
         seed: i.seed,

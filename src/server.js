@@ -9,6 +9,8 @@ import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, 
 import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
 import { ComfyClient } from './comfy.js'
+import { backfillThumbnails, isBackfillRunning } from './thumbnails.js'
+import { THUMBS_DIR, getBinaries } from './media.js'
 import { QUALITIES } from './csv.js'
 import { MODES } from './workflow.js'
 
@@ -19,6 +21,7 @@ for (const dir of [config.OUTPUTS_DIR, config.PROD_DIR, config.INPUTS_DIR, confi
 app.use('/outputs', express.static(config.OUTPUTS_DIR, { acceptRanges: true }))
 app.use('/prod', express.static(config.PROD_DIR, { acceptRanges: true }))
 app.use('/inputs', express.static(config.INPUTS_DIR))
+app.use('/thumbs', express.static(THUMBS_DIR, { maxAge: '7d' }))
 
 const uploadCsv = multer({ dest: config.CSV_DIR, limits: { fileSize: 1024 * 1024 * 1024 } })
 const uploadJson = multer({ limits: { fileSize: 20 * 1024 * 1024 } })
@@ -54,8 +57,16 @@ const handle = (fn) => async (req, res) => {
 // ---- health ----
 
 app.get('/api/health', handle(async (req, res) => {
-  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
+  const bins = await getBinaries()
+  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
 }))
+
+// thumbnails are made automatically when a clip finishes; this fills in older rows
+app.post('/api/runs/:id/thumbnails', (req, res) => {
+  if (isBackfillRunning()) return res.status(409).json({ error: 'Thumbnail backfill already running' })
+  backfillThumbnails({ runId: Number(req.params.id) }).then((r) => console.log(`[thumbs] run ${req.params.id}: ${JSON.stringify(r)}`))
+  res.json({ started: true })
+})
 
 // ---- workflows ----
 
@@ -347,4 +358,10 @@ app.get('/api/instances/:id/graph', handle(async (req, res) => {
   res.json({ workflow: { id: workflow.id, name: workflow.name }, values, graph })
 }))
 
-app.listen(config.PORT, config.HOST, () => console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`))
+app.listen(config.PORT, config.HOST, async () => {
+  console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`)
+  const bins = await getBinaries()
+  console.log(`[media] ffmpeg: ${bins.ffmpeg || 'none'} · ffprobe: ${bins.ffprobe || 'none'}`)
+  // fill in posters for clips generated before thumbnails existed (or while ffmpeg was missing)
+  if (bins.ffmpeg) backfillThumbnails().then((r) => r.candidates && console.log(`[thumbs] backfill: ${JSON.stringify(r)}`))
+})
