@@ -635,7 +635,7 @@ $('stopBtn').onclick = async () => {
 $('thumbsBtn').onclick = async () => { try { await post(`/api/runs/${currentRunId}/thumbnails`, {}); alert('Thumbnail backfill started') } catch (err) { alert(err.message) } }
 $('resetFailedBtn').onclick = async () => { const r = await post(`/api/runs/${currentRunId}/reset-failed`, {}); alert(`${r.reset} rows set back to pending`); refresh(false) }
 $('resampleBtn').onclick = async () => {
-  try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }
+  try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added}, removed ${r.removed || 0} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }
 }
 $('uploadCsvBtn').onclick = async () => {
   const file = $('csvFile').files[0]

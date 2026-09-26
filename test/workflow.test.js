@@ -100,3 +100,24 @@ test('reference graph: refi2v counts only reference-fed slots', () => {
   assert.equal(caps.referenceSlots, 1)
   assert.equal(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a"]', ref_audios_json: '[]' } }), null)
 })
+
+test('lowering rows per cell drops only ungenerated rows', async () => {
+  const { importCsv, sampleRun, coverage } = await import('../src/scenario.js')
+  const db = (await import('../src/db.js')).default
+  const csv = new URL('./fixtures/cells.csv', import.meta.url)
+  fs.mkdirSync(new URL('./fixtures/', import.meta.url), { recursive: true })
+  const header = 'id,createdAt,userId,videoModel,quality,aspectRatio,videoDurationSeconds,prompt,firstFrameUrl,lastFrameUrl,voiceOverUrl,audioStartTime,referenceImages,referenceAudios,styleId,styleName,videoType,videoTypeName,flow,width,height,videoUrl,mode,durationBucket'
+  const rows = Array.from({ length: 8 }, (_, i) => `${i},2026-09-01,1,renderforest-pro,480,16:9,5,p${i},,,,,,,,,,,,854,480,https://x/v${i}.mp4,,`)
+  fs.writeFileSync(csv, [header, ...rows].join('\n'))
+  const { runId, sampled } = await importCsv({ csvPath: csv.pathname, name: 'cells', perCell: 6, seed: 1 })
+  assert.equal(sampled, 6)
+  const done = db.prepare('SELECT id FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY id LIMIT 2').all(runId)
+  for (const d of done) db.prepare("UPDATE instances SET status = 'done' WHERE id = ?").run(d.id)
+  const r = sampleRun({ runId, perCell: 3 })
+  assert.equal(r.removed, 3)
+  assert.equal(r.sampled, 3)
+  assert.equal(coverage(runId)[0].done, 2)
+  const r2 = sampleRun({ runId, perCell: 5 })
+  assert.equal(r2.added, 2)
+  db.prepare('DELETE FROM runs WHERE id = ?').run(runId)
+})
