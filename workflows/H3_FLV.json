@@ -265,7 +265,7 @@
         0
       ],
       "guider": [
-        "23",
+        "266",
         0
       ],
       "sampler": [
@@ -442,6 +442,96 @@
     "class_type": "LoadImage",
     "_meta": {
       "title": "<Picture 1>"
+    }
+  },
+  "16": {
+    "inputs": {
+      "expression": "a * b",
+      "values.a": [
+        "15",
+        0
+      ],
+      "values.b": [
+        "219",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "pass-2 width = pass-1 \u00d7 upscale"
+    }
+  },
+  "17": {
+    "inputs": {
+      "expression": "a * b",
+      "values.a": [
+        "15",
+        1
+      ],
+      "values.b": [
+        "219",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "pass-2 height = pass-1 \u00d7 upscale"
+    }
+  },
+  "265": {
+    "inputs": {
+      "prompt": [
+        "12",
+        0
+      ],
+      "length": [
+        "14",
+        1
+      ],
+      "clip": [
+        "4",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ],
+      "first_frame": [
+        "10",
+        0
+      ],
+      "last_frame": [
+        "264",
+        0
+      ],
+      "width": [
+        "16",
+        1
+      ],
+      "height": [
+        "17",
+        1
+      ]
+    },
+    "class_type": "MiniMaxH3ImageToVideo",
+    "_meta": {
+      "title": "Conditioning - pass 2 (first/last frame at upscaled size)"
+    }
+  },
+  "266": {
+    "inputs": {
+      "model": [
+        "21",
+        0
+      ],
+      "conditioning": [
+        "265",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "PASS 2 - guider"
     }
   }
 }
