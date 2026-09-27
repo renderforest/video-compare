@@ -26,6 +26,7 @@ export const currentProgress = (instanceId) => progress.get(instanceId) || null
 export const requestStop = (runId) => {
   if (!activeRuns.has(runId)) return false
   stopRequests.add(runId)
+  db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'stopped by a user at ' || datetime('now') || ' UTC' WHERE id = ?").run(runId)
   return true
 }
 
@@ -290,6 +291,8 @@ const generateInstance = async ({ client, instance, workflow, settings, seed }) 
 export const runPending = async ({ runId, onProgress = () => {} }) => {
   if (activeRuns.has(runId)) throw new Error(`Run ${runId} is already in progress`)
   activeRuns.add(runId)
+  // remembered across restarts: a run that was active when the server died is resumed on boot
+  db.prepare('UPDATE runs SET wanted_active = 1, last_stop = NULL WHERE id = ?').run(runId)
   try {
     const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
     if (!run) throw new Error(`Run ${runId} not found`)
@@ -407,8 +410,14 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
       client.close()
     }
     const summary = { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
+    const reason = stopReasons.get(runId)
+    db.prepare("UPDATE runs SET wanted_active = 0, last_stop = COALESCE(?, CASE WHEN ? THEN last_stop ELSE 'finished at ' || datetime('now') || ' UTC' END) WHERE id = ?")
+      .run(reason ? `${reason} (at ${new Date().toISOString()})` : null, stopped ? 1 : 0, runId)
     await emit('run:finished', { runId, summary })
     return summary
+  } catch (err) {
+    db.prepare("UPDATE runs SET wanted_active = 0, last_stop = ? WHERE id = ?").run(`error: ${err.message}`, runId)
+    throw err
   } finally {
     activeRuns.delete(runId)
     stopRequests.delete(runId)
@@ -416,3 +425,18 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
 }
 
 export const interruptComfy = () => new ComfyClient({ baseUrl: config.COMFY_URL }).interrupt()
+
+/** Resumes runs that were active when the previous server process died (crash, deploy, restart). */
+export const resumeInterruptedRuns = ({ delayMs = 5000 } = {}) => {
+  const runs = db.prepare('SELECT id, name FROM runs WHERE wanted_active = 1').all()
+  for (const run of runs) {
+    console.log(`[resume] run ${run.id} "${run.name}" was active before the restart — resuming in ${delayMs / 1000}s`)
+    setTimeout(() => {
+      runPending({ runId: run.id }).then(
+        (r) => console.log(`[run ${run.id}] finished: ${JSON.stringify(r)}`),
+        (err) => console.error(`[run ${run.id}] resume failed: ${err.message}`)
+      )
+    }, delayMs)
+  }
+  return runs.length
+}

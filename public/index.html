@@ -436,7 +436,7 @@ function renderStats (run) {
     ` &nbsp;|&nbsp; ${run.sampled_cells}/${run.cells} cells · pool ${run.pool}`
   $('genSummary').textContent = run.active ? `Generating… ${run.done || 0}/${run.total}` : pending + (run.failed || 0) ? `${pending + (run.failed || 0)} left to generate` : run.total ? 'All done' : 'Nothing sampled'
   $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow` +
-    (run.stop_reason && !run.active ? ` · ⚠ stopped: ${run.stop_reason}` : '')
+    (run.stop_reason && !run.active ? ` · ${/^finished/.test(run.stop_reason) ? '' : '⚠ '}${run.stop_reason}` : '')
 }
 
 function renderCoverage () {

@@ -5,7 +5,7 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason } from './runner.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason, resumeInterruptedRuns } from './runner.js'
 import { freeDiskGb, lowDiskReason } from './disk.js'
 import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
@@ -45,7 +45,7 @@ const runStats = db.prepare(`
   FROM instances WHERE run_id = ?
 `)
 
-const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id), stop_reason: runStopReason(run.id) })
+const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id), stop_reason: runStopReason(run.id) || run.last_stop || null })
 
 const handle = (fn) => async (req, res) => {
   try {
@@ -368,4 +368,5 @@ app.listen(config.PORT, config.HOST, async () => {
   console.log(`[media] ffmpeg: ${bins.ffmpeg || 'none'} · ffprobe: ${bins.ffprobe || 'none'}`)
   // fill in posters for clips generated before thumbnails existed (or while ffmpeg was missing)
   if (bins.ffmpeg) backfillThumbnails().then((r) => r.candidates && console.log(`[thumbs] backfill: ${JSON.stringify(r)}`))
+  resumeInterruptedRuns()
 })

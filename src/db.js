@@ -88,7 +88,9 @@ for (const [table, column] of [
   ['instances', 'note TEXT'],
   ['workflows', 'detector_version INTEGER NOT NULL DEFAULT 1'],
   ['instances', 'output_thumb TEXT'],
-  ['instances', 'prod_thumb TEXT']
+  ['instances', 'prod_thumb TEXT'],
+  ['runs', 'wanted_active INTEGER NOT NULL DEFAULT 0'],
+  ['runs', 'last_stop TEXT']
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
