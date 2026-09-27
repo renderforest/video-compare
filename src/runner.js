@@ -411,12 +411,17 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     }
     const summary = { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
     const reason = stopReasons.get(runId)
-    db.prepare("UPDATE runs SET wanted_active = 0, last_stop = COALESCE(?, CASE WHEN ? THEN last_stop ELSE 'finished at ' || datetime('now') || ' UTC' END) WHERE id = ?")
-      .run(reason ? `${reason} (at ${new Date().toISOString()})` : null, stopped ? 1 : 0, runId)
+    if (reason) {
+      // paused by a guard (e.g. low disk): stay "wanted", the watchdog resumes it once the cause clears
+      db.prepare('UPDATE runs SET last_stop = ? WHERE id = ?').run(`${reason} (at ${new Date().toISOString()})`, runId)
+    } else if (!stopped) {
+      db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'finished at ' || datetime('now') || ' UTC' WHERE id = ?").run(runId)
+    }
     await emit('run:finished', { runId, summary })
     return summary
   } catch (err) {
-    db.prepare("UPDATE runs SET wanted_active = 0, last_stop = ? WHERE id = ?").run(`error: ${err.message}`, runId)
+    // unexpected error: keep the run wanted so the watchdog retries; the reason is visible in the UI
+    db.prepare('UPDATE runs SET last_stop = ? WHERE id = ?').run(`error: ${err.message} (at ${new Date().toISOString()})`, runId)
     throw err
   } finally {
     activeRuns.delete(runId)
@@ -426,17 +431,32 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
 
 export const interruptComfy = () => new ComfyClient({ baseUrl: config.COMFY_URL }).interrupt()
 
-/** Resumes runs that were active when the previous server process died (crash, deploy, restart). */
-export const resumeInterruptedRuns = ({ delayMs = 5000 } = {}) => {
-  const runs = db.prepare('SELECT id, name FROM runs WHERE wanted_active = 1').all()
+const pendingCount = db.prepare("SELECT COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 AND status IN ('pending', 'failed', 'running')")
+
+/**
+ * Starts every run that should be active but is not: after a restart, after a guard pause,
+ * or after an error. Only an explicit Stop (wanted_active = 0) or no pending rows ends it.
+ */
+export const resumeWantedRuns = ({ delayMs = 5000, label = 'resume' } = {}) => {
+  const runs = db.prepare('SELECT id, name FROM runs WHERE wanted_active = 1').all().filter((r) => !activeRuns.has(r.id))
   for (const run of runs) {
-    console.log(`[resume] run ${run.id} "${run.name}" was active before the restart — resuming in ${delayMs / 1000}s`)
+    if (!pendingCount.get(run.id).c) {
+      db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'finished at ' || datetime('now') || ' UTC' WHERE id = ?").run(run.id)
+      continue
+    }
+    console.log(`[${label}] run ${run.id} "${run.name}" should be running — starting in ${delayMs / 1000}s`)
     setTimeout(() => {
       runPending({ runId: run.id }).then(
         (r) => console.log(`[run ${run.id}] finished: ${JSON.stringify(r)}`),
-        (err) => console.error(`[run ${run.id}] resume failed: ${err.message}`)
+        (err) => console.error(`[run ${run.id}] ${label} failed: ${err.message}`)
       )
     }, delayMs)
   }
   return runs.length
+}
+
+/** Boot: resume immediately; then keep checking every `intervalMs`. */
+export const startWatchdog = ({ intervalMs = 5 * 60 * 1000 } = {}) => {
+  resumeWantedRuns({ label: 'resume' })
+  setInterval(() => resumeWantedRuns({ delayMs: 1000, label: 'watchdog' }), intervalMs)
 }
