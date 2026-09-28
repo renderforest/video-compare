@@ -99,6 +99,12 @@ db.exec(`
     UNIQUE (instance_id, user)
   );
   CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites (user, id);
+
+  CREATE TABLE IF NOT EXISTS users (
+    name TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `)
 
 // additive migrations for DBs created before a column existed

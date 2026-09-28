@@ -211,6 +211,15 @@
 </main>
 <dialog id="zoom"><img id="zoomImg" alt=""></dialog>
 <dialog id="textDlg" class="text"><div id="textDlgBody"></div></dialog>
+<dialog id="userDlg" class="text" style="width:min(520px,92vw)">
+  <h3 style="margin:0 0 4px">Who are you?</h3>
+  <p class="hint" style="margin:0 0 10px">Your name is attached to your ratings, comments and favorites on this computer.</p>
+  <div id="userList" class="caps" style="gap:6px;margin-bottom:12px"></div>
+  <div class="row" style="margin:0">
+    <input type="text" id="newUserName" placeholder="new user name" style="flex:1" autocomplete="off">
+    <button class="primary" id="newUserBtn">Add & continue</button>
+  </div>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id)
@@ -232,17 +241,45 @@ const cardSig = new Map()
 const USER_KEY = 'vc_user'
 let userName = ''
 try { userName = localStorage.getItem(USER_KEY) || '' } catch { userName = '' }
-const askName = (force = false) => {
-  if (userName && !force) return userName
-  const v = prompt('Your name (shown on your ratings and comments):', userName || '')
-  if (v && v.trim()) { userName = v.trim().slice(0, 60); try { localStorage.setItem(USER_KEY, userName) } catch {} }
+let userResolve = null
+const setUser = (name) => {
+  userName = String(name || '').trim().slice(0, 60)
+  try { if (userName) localStorage.setItem(USER_KEY, userName) } catch {}
   renderWho()
   cardSig.clear(); if (currentRunId) refresh(false)
+  if (userResolve) { userResolve(userName); userResolve = null }
+}
+async function openUserDialog () {
+  let users = []
+  try { users = await api('/api/users') } catch { users = [] }
+  $('userList').innerHTML = users.length
+    ? users.map((u) => `<button class="${u.name === userName ? 'primary' : ''}" data-user="${esc(u.name)}" title="last active ${esc(fmtTime(u.last_seen))}">${avatar(u.name)} ${esc(u.name)}</button>`).join('')
+    : '<span class="hint">no users yet — add yourself below</span>'
+  $('userList').querySelectorAll('button[data-user]').forEach((b) => { b.style.display = 'inline-flex'; b.style.alignItems = 'center'; b.style.gap = '6px'; b.onclick = async () => { await post('/api/users', { name: b.dataset.user }).catch(() => {}); $('userDlg').close(); setUser(b.dataset.user) } })
+  $('newUserName').value = ''
+  $('userDlg').showModal()
+  setTimeout(() => $('newUserName').focus(), 50)
+}
+$('newUserBtn').onclick = async () => {
+  const name = $('newUserName').value.trim()
+  if (!name) return $('newUserName').focus()
+  try { await post('/api/users', { name }) } catch (err) { return alert(err.message) }
+  $('userDlg').close(); setUser(name)
+}
+$('newUserName').onkeydown = (e) => { if (e.key === 'Enter') $('newUserBtn').click() }
+// no name yet: the dialog stays until a user is chosen (Escape reopens it)
+$('userDlg').addEventListener('cancel', (e) => { if (!userName) { e.preventDefault() } })
+// returns the current name, opening the picker first if none is set
+const askName = (force = false) => {
+  if (userName && !force) return userName
+  openUserDialog()
   return userName
 }
+const ensureUser = () => (userName ? Promise.resolve(userName) : new Promise((resolve) => { userResolve = resolve; openUserDialog() }))
 function renderWho () { $('whoBtn').textContent = userName ? `You: ${userName}` : 'Set your name' }
-$('whoBtn').onclick = () => askName(true)
+$('whoBtn').onclick = () => openUserDialog()
 renderWho()
+if (!userName) ensureUser()
 const avatarColor = (name) => { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 55% 45%)` }
 const avatar = (name) => `<span class="avatar" style="background:${avatarColor(name)}" title="${esc(name)}">${esc(name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase())}</span>`
 const fmtTime = (iso) => (iso || '').replace('T', ' ').slice(0, 16)
@@ -531,7 +568,7 @@ async function loadFilterValues () {
 document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; refresh(false) } })
 $('onlyProblems').onchange = () => { page = 1; refresh(false) }
 $('onlyCommented').onchange = () => { page = 1; refresh(false) }
-$('onlyFavorites').onchange = () => { if ($('onlyFavorites').checked && !askName()) { $('onlyFavorites').checked = false; return } page = 1; refresh(false) }
+$('onlyFavorites').onchange = async () => { if ($('onlyFavorites').checked && !(await ensureUser())) { $('onlyFavorites').checked = false; return } page = 1; refresh(false) }
 let searchTimer = null
 $('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
 $('clearFilters').onclick = () => {
@@ -691,7 +728,7 @@ window.loadComments = async (id, side) => {
 window.postComment = async (id, side, ta) => {
   const body = ta.value.trim()
   if (!body) return
-  if (!askName()) return
+  if (!(await ensureUser())) return
   try {
     const c = await api(`/api/instances/${id}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body, side, author: userName }) })
     ta.value = ''
@@ -709,7 +746,7 @@ window.deleteComment = async (cid, btn) => {
 }
 
 window.toggleFavorite = async (id, btn) => {
-  if (!askName()) return
+  if (!(await ensureUser())) return
   try {
     const r = await api(`/api/instances/${id}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) })
     btn.className = `star ${r.favorite ? 'sel' : ''}`
@@ -721,7 +758,7 @@ window.toggleFavorite = async (id, btn) => {
 }
 
 window.rate = async (id, rating, already) => {
-  if (!already && !askName()) return await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
+  if (!already && !(await ensureUser())) return await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
 window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, { note }) }
 window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
 window.showGraph = async (id) => {

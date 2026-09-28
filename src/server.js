@@ -346,7 +346,34 @@ app.get('/api/runs/:id/summary.csv', (req, res) => {
 
 // ---- instances ----
 
-const authorOf = (req) => String(req.body?.author || req.get('x-user') || '').trim().slice(0, 60)
+const touchUser = db.prepare("INSERT INTO users (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET last_seen = datetime('now')")
+const authorOf = (req) => {
+  const name = String(req.body?.author || req.get('x-user') || '').trim().slice(0, 60)
+  if (name) touchUser.run(name)
+  return name
+}
+
+// ---- users: the picker shown when the page opens ----
+
+app.get('/api/users', (req, res) => {
+  // people known from any activity, newest activity first
+  db.prepare(`INSERT OR IGNORE INTO users (name) SELECT DISTINCT author FROM comments
+              UNION SELECT DISTINCT user FROM favorites UNION SELECT DISTINCT rated_by FROM instances WHERE rated_by IS NOT NULL`).run()
+  res.json(db.prepare('SELECT name, created_at, last_seen FROM users ORDER BY last_seen DESC').all())
+})
+
+app.post('/api/users', (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 60)
+  if (!name) return res.status(400).json({ error: 'Name required' })
+  touchUser.run(name)
+  res.json(db.prepare('SELECT name, created_at, last_seen FROM users WHERE name = ?').get(name))
+})
+
+app.delete('/api/users/:name', (req, res) => {
+  const result = db.prepare('DELETE FROM users WHERE name = ?').run(req.params.name)
+  if (!result.changes) return res.status(404).json({ error: 'User not found' })
+  res.json({ ok: true })
+})
 
 app.post('/api/instances/:id/rating', (req, res) => {
   const { rating } = req.body || {}

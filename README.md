@@ -21,7 +21,7 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
 5. **Review & export**: rows are paged and filtered server-side (default view: done + unrated), both clips
    play in sync, rate, add notes; export per-row and per-cell summary CSVs.
 
-Comments and names: the header asks for a display name once (kept in the browser) and sends it with every rating
+Users: on first open a dialog asks you to pick an existing user or add a new one (kept in the browser; the header button switches) and sends it with every rating
 and comment (`x-user` header / `author` field). Each card has two comment threads, one under the production clip and one under the local clip; only the author can delete their
 comment. A ★ on each card adds it to your favorites (per name); filters: "rated by", "favorited by", "★ my favorites", "with comments". Exports carry `ratedBy`, `favoritedBy` and the two comment columns.
 
