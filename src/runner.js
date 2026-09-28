@@ -337,7 +337,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     console.log(`[run ${runId}] prefetched ${prefetch.total - prefetch.failed}/${prefetch.total} assets${prefetch.failed ? ` (${prefetch.failed} failed, retried per instance)` : ''}`)
 
     await client.connect()
-    const setStatus = db.prepare('UPDATE instances SET status = ?, error = ?, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, workflow_id = ?, attempt = ? WHERE id = ?')
+    const setStatus = db.prepare("UPDATE instances SET status = ?, error = ?, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, workflow_id = ?, attempt = ?, finished_at = CASE WHEN ? = 'done' THEN datetime('now') ELSE finished_at END WHERE id = ?")
     let done = 0
     let failed = 0
     let reused = 0
@@ -367,7 +367,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
         db.prepare('UPDATE instances SET gen_key = ? WHERE id = ?').run(genKey, instance.id)
         const reusable = findReusable({ genKey, instanceId: instance.id })
         if (reusable) {
-          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ?, output_thumb = ? WHERE id = ?")
+          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ?, output_thumb = ?, finished_at = datetime('now') WHERE id = ?")
             .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, reusable.output_thumb, instance.id)
           done += 1
           reused += 1
@@ -382,7 +382,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
           try {
             await client.connect()
             const result = await generateInstance({ client, instance, workflow, settings, seed })
-            setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, instance.id)
+            setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, 'done', instance.id)
             done += 1
             lastError = null
             await emit('generation:finished', { instance, outputPath: path.join(config.OUTPUTS_DIR, result.outName) })
@@ -395,13 +395,13 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
         }
         progress.delete(instance.id)
         if (lastError && stopRequests.has(runId)) {
-          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, instance.id)
+          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, 'pending', instance.id)
           onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
           stopped = true
           break
         }
         if (lastError) {
-          setStatus.run('failed', String(lastError.message || lastError), null, Date.now() - startedAt, null, null, workflow.id, attempt, instance.id)
+          setStatus.run('failed', String(lastError.message || lastError), null, Date.now() - startedAt, null, null, workflow.id, attempt, 'failed', instance.id)
           failed += 1
         }
         onProgress({ phase: 'generate', instanceId: instance.id, status: lastError ? 'failed' : 'done' })
@@ -459,4 +459,21 @@ export const resumeWantedRuns = ({ delayMs = 5000, label = 'resume' } = {}) => {
 export const startWatchdog = ({ intervalMs = 5 * 60 * 1000 } = {}) => {
   resumeWantedRuns({ label: 'resume' })
   setInterval(() => resumeWantedRuns({ delayMs: 1000, label: 'watchdog' }), intervalMs)
+}
+
+/** Rows generated before finished_at existed get the output file's modification time. */
+export const backfillFinishedAt = () => {
+  const rows = db.prepare("SELECT id, output_path FROM instances WHERE status = 'done' AND finished_at IS NULL AND output_path IS NOT NULL").all()
+  const set = db.prepare('UPDATE instances SET finished_at = ? WHERE id = ?')
+  let n = 0
+  for (const row of rows) {
+    try {
+      const mtime = fs.statSync(path.join(config.OUTPUTS_DIR, row.output_path)).mtime
+      set.run(mtime.toISOString().replace('T', ' ').slice(0, 19), row.id)
+      n += 1
+    } catch {
+      // file gone; leave null
+    }
+  }
+  return n
 }

@@ -101,7 +101,8 @@ for (const [table, column] of [
   ['runs', 'wanted_active INTEGER NOT NULL DEFAULT 0'],
   ['runs', 'last_stop TEXT'],
   ['instances', 'rated_by TEXT'],
-  ["comments", "side TEXT NOT NULL DEFAULT 'local' CHECK (side IN ('prod', 'local'))"]
+  ["comments", "side TEXT NOT NULL DEFAULT 'local' CHECK (side IN ('prod', 'local'))"],
+  ['instances', 'finished_at TEXT']
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
@@ -111,3 +112,5 @@ for (const [table, column] of [
 }
 
 export default db
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_instances_finished ON instances (run_id, finished_at)')

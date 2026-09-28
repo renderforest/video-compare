@@ -199,6 +199,7 @@
     <span id="pageInfo" class="hint" style="margin-top:0"></span>
     <button id="nextPage">next ›</button>
     <label>per page <select id="pageSize"><option>12</option><option selected>24</option><option>48</option><option>96</option></select></label>
+    <label>order <select id="orderSel"><option value="generated" selected>generated ↑ (oldest first, new at the end)</option><option value="newest">generated ↓ (newest first)</option><option value="scenario">scenario, then id</option></select></label>
     <span class="hint" style="margin-top:0">keys: ← → pages · videos load only while on screen</span>
   </div>
 
@@ -437,7 +438,7 @@ async function showWorkflowDetails (id) {
 
 // ---- refresh ----
 const instanceQuery = () => {
-  const q = new URLSearchParams({ page, pageSize: $('pageSize').value })
+  const q = new URLSearchParams({ page, pageSize: $('pageSize').value, order: $('orderSel').value })
   for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v)
   if (scenarioFilter) q.set('scenario', scenarioFilter)
   if ($('onlyProblems').checked) q.set('problems', '1')
@@ -536,6 +537,7 @@ $('clearFilters').onclick = () => {
 $('prevPage').onclick = () => { if (page > 1) { page -= 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
 $('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
 $('pageSize').onchange = () => { page = 1; refresh(false) }
+$('orderSel').onchange = () => { page = 1; refresh(false) }
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select') || $('textDlg').open) return
   if (e.key === 'ArrowLeft') $('prevPage').click()
@@ -543,7 +545,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function signature (i) {
-  return [i.status, i.rating, i.rated_by, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.rated_by, i.finished_at, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
 // Videos get their src only while near the viewport, and drop it again when scrolled away,
@@ -626,6 +628,7 @@ function cardHtml (i) {
       ${i.flow ? `<span class="badge">${esc(i.flow)}</span>` : ''}
       ${i.duration_ms ? `<span class="badge">${Math.round(i.duration_ms / 1000)}s gen${i.reused ? ' (reused)' : ''}</span>` : ''}
       ${i.seed != null ? `<span class="badge">seed ${i.seed}</span>` : ''}
+      ${i.finished_at ? `<span class="badge" title="generated at (UTC)">🕒 ${esc(i.finished_at.slice(5, 16))}</span>` : ''}
       ${i.workflow_id ? `<span class="badge" title="workflow id">wf #${i.workflow_id}</span>` : ''}
       ${probe && probe.width ? `<span class="badge">${probe.width}×${probe.height} ${probe.fps || ''}fps ${probe.duration ? probe.duration.toFixed(1) + 's' : ''}</span>` : ''}
       ${checks.map((c) => `<span class="badge ${c.ok ? 'yes' : 'no'}" title="${esc(c.detail)}">${c.name}</span>`).join('')}

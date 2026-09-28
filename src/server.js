@@ -5,7 +5,7 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason, startWatchdog } from './runner.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason, startWatchdog, backfillFinishedAt } from './runner.js'
 import { freeDiskGb, lowDiskReason } from './disk.js'
 import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
@@ -202,12 +202,14 @@ app.get('/api/runs/:id/instances', (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) AS c FROM instances i WHERE ${where}`).get(...params).c
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const page = Math.min(pages, Math.max(1, Number(req.query.page) || 1))
+  // default: by local generation time, oldest first, so new clips append at the end; rows not generated yet come last
+  const orderBy = req.query.order === 'scenario' ? 'scenario_key, id' : req.query.order === 'newest' ? 'finished_at IS NULL, finished_at DESC, id DESC' : 'finished_at IS NULL, finished_at ASC, id'
   const rows = db
     .prepare(`SELECT i.*, (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id) AS comment_count,
                      (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'prod') AS prod_comment_count,
                      (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'local') AS local_comment_count,
                      (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters
-              FROM instances i WHERE ${where} ORDER BY scenario_key, id LIMIT ? OFFSET ?`)
+              FROM instances i WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize)
     .map(withProgress)
   res.json({ total, page, pages, pageSize, rows })
@@ -407,6 +409,8 @@ app.listen(config.PORT, config.HOST, async () => {
   console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`)
   const bins = await getBinaries()
   console.log(`[media] ffmpeg: ${bins.ffmpeg || 'none'} · ffprobe: ${bins.ffprobe || 'none'}`)
+  const dated = backfillFinishedAt()
+  if (dated) console.log(`[order] finished_at back-filled for ${dated} rows from file dates`)
   // fill in posters for clips generated before thumbnails existed (or while ffmpeg was missing)
   if (bins.ffmpeg) backfillThumbnails().then((r) => r.candidates && console.log(`[thumbs] backfill: ${JSON.stringify(r)}`))
   startWatchdog()

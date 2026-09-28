@@ -8,7 +8,7 @@ const localUrl = (instance) => (instance.output_path ? `${config.PUBLIC_BASE_URL
 /** One line per sampled instance: inputs, scenario, outcome, rating. */
 export const exportInstancesCsv = (runId) => {
   const rows = db
-    .prepare('SELECT * FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY scenario_key, id')
+    .prepare('SELECT * FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY finished_at IS NULL, finished_at, id')
     .all(runId)
     .map((i) => {
       const probe = i.probe_json ? JSON.parse(i.probe_json) : {}
@@ -46,6 +46,7 @@ export const exportInstancesCsv = (runId) => {
         seed: i.seed,
         workflowId: i.workflow_id,
         reused: i.reused,
+        generatedAt: i.finished_at,
         generationMs: i.duration_ms,
         outWidth: probe.width,
         outHeight: probe.height,
