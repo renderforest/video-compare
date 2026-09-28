@@ -69,6 +69,7 @@
   .controls { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
   .controls button { font-size: 12px; padding: 4px 9px; }
   .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .star.sel { color: #c98a1b; border-color: #c98a1b; font-weight: 600; }
   .note { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
   .copy { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; }
   .dd { position: relative; }
@@ -189,6 +190,8 @@
     <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
     <input type="search" id="searchBox" placeholder="prompt or project id" size="18">
     <select data-f="rated_by"><option value="">rated by</option></select>
+    <select data-f="favorited_by"><option value="">favorited by</option></select>
+    <label><input type="checkbox" id="onlyFavorites"> ★ my favorites</label>
     <label><input type="checkbox" id="onlyProblems"> only failed checks</label>
     <label><input type="checkbox" id="onlyCommented"> with comments</label>
     <button id="clearFilters">clear</button>
@@ -234,6 +237,7 @@ const askName = (force = false) => {
   const v = prompt('Your name (shown on your ratings and comments):', userName || '')
   if (v && v.trim()) { userName = v.trim().slice(0, 60); try { localStorage.setItem(USER_KEY, userName) } catch {} }
   renderWho()
+  cardSig.clear(); if (currentRunId) refresh(false)
   return userName
 }
 function renderWho () { $('whoBtn').textContent = userName ? `You: ${userName}` : 'Set your name' }
@@ -443,6 +447,7 @@ const instanceQuery = () => {
   if (scenarioFilter) q.set('scenario', scenarioFilter)
   if ($('onlyProblems').checked) q.set('problems', '1')
   if ($('onlyCommented').checked) q.set('commented', '1')
+  if ($('onlyFavorites').checked && userName) q.set('favorited_by', userName)
   if ($('searchBox').value.trim()) q.set('q', $('searchBox').value.trim())
   return q.toString()
 }
@@ -515,7 +520,7 @@ async function loadFilterValues () {
   for (const sel of document.querySelectorAll('#filters select[data-f]')) {
     const f = sel.dataset.f
     if (f === 'rating') { sel.value = filters.rating || ''; continue }
-    const list = f === 'rated_by' ? (values.people || []) : (values[f] || [])
+    const list = f === 'rated_by' || f === 'favorited_by' ? (values.people || []) : (values[f] || [])
     const opts = list.map((v) => (typeof v === 'object'
       ? `<option value="${esc(v.value ?? v.v)}">${esc(v.label ?? v.v)}${v.count != null || v.c != null ? ` (${v.count ?? v.c})` : ''}</option>`
       : `<option value="${esc(v)}">${esc(v)}</option>`)).join('')
@@ -526,12 +531,13 @@ async function loadFilterValues () {
 document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; refresh(false) } })
 $('onlyProblems').onchange = () => { page = 1; refresh(false) }
 $('onlyCommented').onchange = () => { page = 1; refresh(false) }
+$('onlyFavorites').onchange = () => { if ($('onlyFavorites').checked && !askName()) { $('onlyFavorites').checked = false; return } page = 1; refresh(false) }
 let searchTimer = null
 $('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
 $('clearFilters').onclick = () => {
   filters = {}
   document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = '' })
-  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
+  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('onlyFavorites').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
   renderCoverage(); refresh(false)
 }
 $('prevPage').onclick = () => { if (page > 1) { page -= 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
@@ -545,7 +551,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function signature (i) {
-  return [i.status, i.rating, i.rated_by, i.finished_at, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.rated_by, i.finished_at, i.is_favorite, i.favorited_by, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
 // Videos get their src only while near the viewport, and drop it again when scrolled away,
@@ -567,7 +573,7 @@ function renderGrid () {
   const from = pageInfo.total ? (pageInfo.page - 1) * pageInfo.pageSize + 1 : 0
   const to = from ? from + visible.length - 1 : 0
   $('filterCount').textContent = `${pageInfo.total} rows match`
-  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('onlyCommented').checked || $('searchBox').value.trim()
+  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('onlyCommented').checked || $('onlyFavorites').checked || $('searchBox').value.trim()
   $('pageInfo').textContent = pageInfo.total ? `${from}–${to} of ${pageInfo.total} · page ${pageInfo.page}/${pageInfo.pages}` : filtered ? 'no rows match these filters (default view is done + unrated — press clear to see everything)' : 'no rows'
   $('prevPage').disabled = pageInfo.page <= 1
   $('nextPage').disabled = pageInfo.page >= pageInfo.pages
@@ -639,6 +645,7 @@ function cardHtml (i) {
       ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local', poster: i.output_thumb ? `/thumbs/${encodeURIComponent(i.output_thumb)}` : null, comments: { id: i.id, side: 'local', count: i.local_comment_count } })}
     </div>
     <div class="controls">
+      <button class="star ${i.is_favorite ? 'sel' : ''}" onclick="toggleFavorite(${i.id}, this)" title="${i.favorited_by ? 'favorited by ' + esc(i.favorited_by.split(',').join(', ')) : 'add to my favorites'}">${i.is_favorite ? '★' : '☆'}${i.favorited_by ? ` ${i.favorited_by.split(',').length}` : ''}</button>
       <button onclick="playBoth(${i.id})">▶ play both</button>
       <button onclick="pauseBoth(${i.id})">❚❚ pause</button>
       <button onclick="restartBoth(${i.id})">↺ restart</button>
@@ -699,6 +706,18 @@ window.postComment = async (id, side, ta) => {
 window.deleteComment = async (cid, btn) => {
   if (!confirm('Delete this comment?')) return
   try { await api(`/api/comments/${cid}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) }); btn.closest('.comment').remove() } catch (err) { alert(err.message) }
+}
+
+window.toggleFavorite = async (id, btn) => {
+  if (!askName()) return
+  try {
+    const r = await api(`/api/instances/${id}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) })
+    btn.className = `star ${r.favorite ? 'sel' : ''}`
+    btn.textContent = `${r.favorite ? '★' : '☆'}${r.favoritedBy.length ? ` ${r.favoritedBy.length}` : ''}`
+    btn.title = r.favoritedBy.length ? `favorited by ${r.favoritedBy.join(', ')}` : 'add to my favorites'
+    const row = instances.find((x) => x.id === id)
+    if (row) { row.is_favorite = r.favorite ? 1 : 0; row.favorited_by = r.favoritedBy.join(',') || null; cardSig.set(`card-${id}`, signature(row)) }
+  } catch (err) { alert(err.message) }
 }
 
 window.rate = async (id, rating, already) => {

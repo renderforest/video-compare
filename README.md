@@ -23,7 +23,7 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
 
 Comments and names: the header asks for a display name once (kept in the browser) and sends it with every rating
 and comment (`x-user` header / `author` field). Each card has two comment threads, one under the production clip and one under the local clip; only the author can delete their
-comment. Filters: "rated by", "with comments". Exports carry `ratedBy` and a `comments` column.
+comment. A ★ on each card adds it to your favorites (per name); filters: "rated by", "favorited by", "★ my favorites", "with comments". Exports carry `ratedBy`, `favoritedBy` and the two comment columns.
 
 Thumbnails: when a clip finishes (hook `generation:finished` in `src/hooks.js`) and when a production clip is
 cached (`prod:cached`), a 320 px JPEG poster is written to `data/thumbs/` with ffmpeg (system binary, else the

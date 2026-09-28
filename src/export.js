@@ -60,6 +60,7 @@ export const exportInstancesCsv = (runId) => {
         ratedBy: i.rated_by,
         ratedAt: i.rated_at,
         note: i.note,
+        favoritedBy: db.prepare('SELECT user FROM favorites WHERE instance_id = ? ORDER BY id').all(i.id).map((f) => f.user).join('|'),
         prodComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'prod' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n'),
         localComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'local' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n')
       }

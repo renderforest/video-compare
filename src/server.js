@@ -178,6 +178,10 @@ const instanceFilters = (query) => {
   }
   if (query.problems === '1') where.push("checks_json LIKE '%\"ok\":false%'")
   if (query.commented === '1') where.push('EXISTS (SELECT 1 FROM comments c WHERE c.instance_id = i.id)')
+  if (query.favorited_by) {
+    where.push('EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id AND f.user = ?)')
+    params.push(query.favorited_by)
+  } else if (query.favorites === '1') where.push('EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id)')
   if (query.rated_by) {
     where.push('rated_by = ?')
     params.push(query.rated_by)
@@ -208,9 +212,11 @@ app.get('/api/runs/:id/instances', (req, res) => {
     .prepare(`SELECT i.*, (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id) AS comment_count,
                      (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'prod') AS prod_comment_count,
                      (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'local') AS local_comment_count,
-                     (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters
+                     (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters,
+                     (SELECT GROUP_CONCAT(user) FROM favorites f WHERE f.instance_id = i.id) AS favorited_by,
+                     EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id AND f.user = ?) AS is_favorite
               FROM instances i WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
-    .all(...params, pageSize, (page - 1) * pageSize)
+    .all(String(req.get('x-user') || ''), ...params, pageSize, (page - 1) * pageSize)
     .map(withProgress)
   res.json({ total, page, pages, pageSize, rows })
 })
@@ -225,7 +231,8 @@ app.get('/api/runs/:id/filters', (req, res) => {
     .map((r) => ({ value: `${r.vt}|${r.st}`, label: r.vt ? `${r.vt} / ${r.st}` : r.st, count: r.c }))
   const statuses = db.prepare('SELECT status AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1').all(runId)
   const people = db.prepare(`SELECT DISTINCT author AS v FROM comments WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?)
-                             UNION SELECT DISTINCT rated_by FROM instances WHERE run_id = ? AND rated_by IS NOT NULL ORDER BY 1`).all(runId, runId).map((r) => r.v)
+                             UNION SELECT DISTINCT rated_by FROM instances WHERE run_id = ? AND rated_by IS NOT NULL
+                             UNION SELECT DISTINCT user FROM favorites WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?) ORDER BY 1`).all(runId, runId, runId).map((r) => r.v)
   res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, status: statuses, people })
 })
 
@@ -348,6 +355,25 @@ app.post('/api/instances/:id/rating', (req, res) => {
   const result = db.prepare("UPDATE instances SET rating = ?, rated_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, rated_by = ? WHERE id = ?").run(rating, rating, author, req.params.id)
   if (!result.changes) return res.status(404).json({ error: 'Instance not found' })
   res.json({ ok: true })
+})
+
+// ---- favorites (per user) ----
+
+app.post('/api/instances/:id/favorite', (req, res) => {
+  const user = authorOf(req)
+  if (!user) return res.status(400).json({ error: 'Set your name first (top right)' })
+  if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'Instance not found' })
+  const existing = db.prepare('SELECT id FROM favorites WHERE instance_id = ? AND user = ?').get(req.params.id, user)
+  if (existing) db.prepare('DELETE FROM favorites WHERE id = ?').run(existing.id)
+  else db.prepare('INSERT INTO favorites (instance_id, user) VALUES (?, ?)').run(req.params.id, user)
+  const users = db.prepare('SELECT user FROM favorites WHERE instance_id = ? ORDER BY id').all(req.params.id).map((r) => r.user)
+  res.json({ favorite: !existing, favoritedBy: users })
+})
+
+app.get('/api/favorites', (req, res) => {
+  const user = String(req.query.user || req.get('x-user') || '')
+  if (!user) return res.status(400).json({ error: 'user required' })
+  res.json(db.prepare('SELECT f.instance_id, f.created_at, i.run_id FROM favorites f JOIN instances i ON i.id = f.instance_id WHERE f.user = ? ORDER BY f.id DESC').all(user))
 })
 
 // ---- comments (per user; the author is whatever name the browser sends) ----

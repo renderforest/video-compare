@@ -90,6 +90,15 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_comments_instance ON comments (instance_id, id);
+
+  CREATE TABLE IF NOT EXISTS favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    user TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (instance_id, user)
+  );
+  CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites (user, id);
 `)
 
 // additive migrations for DBs created before a column existed
