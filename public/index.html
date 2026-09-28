@@ -68,7 +68,8 @@
   .inputs small { color: var(--muted); }
   .controls { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
   .controls button { font-size: 12px; padding: 4px 9px; }
-  .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,110,246,.25); font-weight: 600; }
+  .rate button.sel::before { content: '✓ '; }
   .star.sel { color: #c98a1b; border-color: #c98a1b; font-weight: 600; }
   .note { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
   .copy { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; }
@@ -235,6 +236,9 @@ const DEFAULT_FILTERS = { status: 'done', rating: 'unrated' }
 let filters = { ...DEFAULT_FILTERS }
 let page = 1
 let pageInfo = { total: 0, pages: 1 }
+// rows rated in this session stay on the page (with their selection visible) until you navigate,
+// even though the default "unrated" filter no longer matches them
+const pinned = new Map() // id → { row, index }
 const cardSig = new Map()
 
 // ---- who is rating / commenting: a display name kept in this browser ----
@@ -331,6 +335,7 @@ async function loadRuns (selectRunId) {
       <button class="dd-del" data-del="${r.id}" title="Delete this run and its videos">🗑</button>
     </div>`).join('')
   cardSig.clear()
+  pinned.clear()
   scenarioFilter = null
   filters = { ...DEFAULT_FILTERS }
   page = 1
@@ -507,6 +512,9 @@ async function refresh (full = false) {
     await loadFilterValues()
   }
   instances = pageData.rows
+  for (const [id, { row, index }] of pinned) {
+    if (!instances.some((r) => r.id === id)) instances.splice(Math.min(index, instances.length), 0, row)
+  }
   pageInfo = pageData
   if (cov) {
     coverageRows = cov
@@ -565,7 +573,7 @@ async function loadFilterValues () {
     sel.value = filters[f] || ''
   }
 }
-document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; refresh(false) } })
+document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; pinned.clear(); refresh(false) } })
 $('onlyProblems').onchange = () => { page = 1; refresh(false) }
 $('onlyCommented').onchange = () => { page = 1; refresh(false) }
 $('onlyFavorites').onchange = async () => { if ($('onlyFavorites').checked && !(await ensureUser())) { $('onlyFavorites').checked = false; return } page = 1; refresh(false) }
@@ -574,13 +582,13 @@ $('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTim
 $('clearFilters').onclick = () => {
   filters = {}
   document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = '' })
-  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('onlyFavorites').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
+  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('onlyFavorites').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1; pinned.clear()
   renderCoverage(); refresh(false)
 }
-$('prevPage').onclick = () => { if (page > 1) { page -= 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
-$('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
-$('pageSize').onchange = () => { page = 1; refresh(false) }
-$('orderSel').onchange = () => { page = 1; refresh(false) }
+$('prevPage').onclick = () => { if (page > 1) { page -= 1; pinned.clear(); refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; pinned.clear(); refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('pageSize').onchange = () => { page = 1; pinned.clear(); refresh(false) }
+$('orderSel').onchange = () => { page = 1; pinned.clear(); refresh(false) }
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input, textarea, select') || $('textDlg').open) return
   if (e.key === 'ArrowLeft') $('prevPage').click()
@@ -588,7 +596,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function signature (i) {
-  return [i.status, i.rating, i.rated_by, i.finished_at, i.is_favorite, i.favorited_by, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.rated_by, i.finished_at, i.is_favorite, i.favorited_by, i.comments_json, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
 // Videos get their src only while near the viewport, and drop it again when scrolled away,
@@ -637,10 +645,10 @@ function renderGrid () {
   }
 }
 
-function commentsBlock ({ id, side, count }) {
-  return `<details class="comments" id="comments-${id}-${side}" ontoggle="if (this.open) loadComments(${id}, '${side}')">
+function commentsBlock ({ id, side, count, list = [] }) {
+  return `<details class="comments" id="comments-${id}-${side}" open>
       <summary>💬 ${count || 0} comment${count === 1 ? '' : 's'} on ${side === 'prod' ? 'production' : 'local'}</summary>
-      <div class="clist"></div>
+      <div class="clist">${list.length ? list.map(commentHtml).join('') : '<div class="hint">no comments yet</div>'}</div>
       <div class="cform"><textarea placeholder="Comment on the ${side === 'prod' ? 'production' : 'local'} clip…" onkeydown="if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') postComment(${id}, '${side}', this)"></textarea><button onclick="postComment(${id}, '${side}', this.previousElementSibling)">Post</button></div>
     </details>`
 }
@@ -653,6 +661,8 @@ function videoOrPlaceholder ({ src, fallback, label, note, side, poster, comment
     (src ? `<video controls preload="${preload}" loop playsinline data-side="${side}" data-src="${esc(src)}"${poster ? ` poster="${esc(poster)}"` : ''}${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) +
     (comments ? commentsBlock(comments) : '') + '</figure>'
 }
+
+const commentsOf = (i, side) => { try { return JSON.parse(i.comments_json || '[]').filter((c) => c.side === side) } catch { return [] } }
 
 function cardHtml (i) {
   const refs = JSON.parse(i.ref_images_json || '[]')
@@ -678,8 +688,8 @@ function cardHtml (i) {
       <span class="badge" title="production project id">#${esc(i.source_id || i.id)}</span>
     </div>
     <div class="vids">
-      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod', poster: i.prod_thumb ? `/thumbs/${encodeURIComponent(i.prod_thumb)}` : null, comments: { id: i.id, side: 'prod', count: i.prod_comment_count } })}
-      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local', poster: i.output_thumb ? `/thumbs/${encodeURIComponent(i.output_thumb)}` : null, comments: { id: i.id, side: 'local', count: i.local_comment_count } })}
+      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod', poster: i.prod_thumb ? `/thumbs/${encodeURIComponent(i.prod_thumb)}` : null, comments: { id: i.id, side: 'prod', count: i.prod_comment_count, list: commentsOf(i, 'prod') } })}
+      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local', poster: i.output_thumb ? `/thumbs/${encodeURIComponent(i.output_thumb)}` : null, comments: { id: i.id, side: 'local', count: i.local_comment_count, list: commentsOf(i, 'local') } })}
     </div>
     <div class="controls">
       <button class="star ${i.is_favorite ? 'sel' : ''}" onclick="toggleFavorite(${i.id}, this)" title="${i.favorited_by ? 'favorited by ' + esc(i.favorited_by.split(',').join(', ')) : 'add to my favorites'}">${i.is_favorite ? '★' : '☆'}${i.favorited_by ? ` ${i.favorited_by.split(',').length}` : ''}</button>
@@ -732,6 +742,8 @@ window.postComment = async (id, side, ta) => {
   try {
     const c = await api(`/api/instances/${id}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body, side, author: userName }) })
     ta.value = ''
+    const row = instances.find((x) => x.id === id)
+    if (row) { const list = JSON.parse(row.comments_json || '[]'); list.push(c); row.comments_json = JSON.stringify(list); row[`${side}_comment_count`] = (row[`${side}_comment_count`] || 0) + 1; cardSig.set(`card-${id}`, signature(row)) }
     const box = document.querySelector(`#comments-${id}-${side} .clist`)
     if (box.querySelector('.hint')) box.innerHTML = ''
     box.insertAdjacentHTML('beforeend', commentHtml(c))
@@ -742,7 +754,12 @@ window.postComment = async (id, side, ta) => {
 }
 window.deleteComment = async (cid, btn) => {
   if (!confirm('Delete this comment?')) return
-  try { await api(`/api/comments/${cid}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) }); btn.closest('.comment').remove() } catch (err) { alert(err.message) }
+  try {
+    await api(`/api/comments/${cid}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) })
+    const card = btn.closest('.card'); const row = instances.find((x) => `card-${x.id}` === card.id)
+    if (row) { const list = JSON.parse(row.comments_json || '[]').filter((c) => c.id !== cid); row.comments_json = JSON.stringify(list); cardSig.set(card.id, signature(row)) }
+    btn.closest('.comment').remove()
+  } catch (err) { alert(err.message) }
 }
 
 window.toggleFavorite = async (id, btn) => {
@@ -758,7 +775,20 @@ window.toggleFavorite = async (id, btn) => {
 }
 
 window.rate = async (id, rating, already) => {
-  if (!already && !(await ensureUser())) return await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
+  if (!already && !(await ensureUser())) return
+  const next = already ? null : rating
+  await post(`/api/instances/${id}/rating`, { rating: next, author: userName })
+  const index = instances.findIndex((r) => r.id === id)
+  const row = instances[index]
+  if (row) {
+    row.rating = next
+    row.rated_by = next ? userName : null
+    row.rated_at = next ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null
+    pinned.set(id, { row, index })
+    renderGrid()
+  }
+  refresh(false)
+}
 window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, { note }) }
 window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
 window.showGraph = async (id) => {

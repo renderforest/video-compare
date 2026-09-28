@@ -214,6 +214,8 @@ app.get('/api/runs/:id/instances', (req, res) => {
                      (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'local') AS local_comment_count,
                      (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters,
                      (SELECT GROUP_CONCAT(user) FROM favorites f WHERE f.instance_id = i.id) AS favorited_by,
+                     (SELECT json_group_array(json_object('id', c.id, 'side', c.side, 'author', c.author, 'body', c.body, 'created_at', c.created_at))
+                        FROM (SELECT * FROM comments c WHERE c.instance_id = i.id ORDER BY c.id) c) AS comments_json,
                      EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id AND f.user = ?) AS is_favorite
               FROM instances i WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
     .all(String(req.get('x-user') || ''), ...params, pageSize, (page - 1) * pageSize)
