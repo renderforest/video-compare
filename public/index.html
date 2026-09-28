@@ -86,6 +86,19 @@
   dialog.text pre { max-height: 70vh; overflow: auto; font-size: 12px; }
   dialog::backdrop { background: rgba(0,0,0,.6); }
   .empty { color: var(--muted); padding: 60px 0; text-align: center; }
+  .comments { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+  .comments summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .comment { display: flex; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .avatar { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; flex: none; font-weight: 600; }
+  .comment .body { flex: 1; min-width: 0; }
+  .comment .who { font-size: 11px; color: var(--muted); }
+  .comment .who b { color: var(--text); }
+  .comment .text { white-space: pre-wrap; word-break: break-word; }
+  .comment .del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
+  .comment .del:hover { color: var(--err); }
+  .cform { display: flex; gap: 6px; margin-top: 6px; }
+  .cform textarea { flex: 1; min-height: 34px; font-size: 13px; padding: 4px 8px; resize: vertical; }
+  .cform button { align-self: flex-end; }
   code { background: #eef1f6; padding: 1px 4px; border-radius: 3px; }
 </style>
 </head>
@@ -98,6 +111,7 @@
   </div>
   <span class="stats" id="stats"></span>
   <span class="health" id="health">checking ComfyUI…</span>
+  <button id="whoBtn" title="Your name is attached to your ratings and comments">You: —</button>
 </header>
 <main>
   <section class="setup">
@@ -174,7 +188,9 @@
     <select data-f="status"><option value="">status</option></select>
     <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
     <input type="search" id="searchBox" placeholder="prompt or project id" size="18">
+    <select data-f="rated_by"><option value="">rated by</option></select>
     <label><input type="checkbox" id="onlyProblems"> only failed checks</label>
+    <label><input type="checkbox" id="onlyCommented"> with comments</label>
     <button id="clearFilters">clear</button>
     <span class="hint" id="filterCount" style="margin-top:0"></span>
   </div>
@@ -208,7 +224,26 @@ let page = 1
 let pageInfo = { total: 0, pages: 1 }
 const cardSig = new Map()
 
-const api = async (url, opts) => {
+// ---- who is rating / commenting: a display name kept in this browser ----
+const USER_KEY = 'vc_user'
+let userName = ''
+try { userName = localStorage.getItem(USER_KEY) || '' } catch { userName = '' }
+const askName = (force = false) => {
+  if (userName && !force) return userName
+  const v = prompt('Your name (shown on your ratings and comments):', userName || '')
+  if (v && v.trim()) { userName = v.trim().slice(0, 60); try { localStorage.setItem(USER_KEY, userName) } catch {} }
+  renderWho()
+  return userName
+}
+function renderWho () { $('whoBtn').textContent = userName ? `You: ${userName}` : 'Set your name' }
+$('whoBtn').onclick = () => askName(true)
+renderWho()
+const avatarColor = (name) => { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 55% 45%)` }
+const avatar = (name) => `<span class="avatar" style="background:${avatarColor(name)}" title="${esc(name)}">${esc(name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase())}</span>`
+const fmtTime = (iso) => (iso || '').replace('T', ' ').slice(0, 16)
+
+const api = async (url, opts = {}) => {
+  opts.headers = { ...(opts.headers || {}), ...(userName ? { 'x-user': userName } : {}) }
   const res = await fetch(url, opts)
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(json.error || res.statusText)
@@ -406,6 +441,7 @@ const instanceQuery = () => {
   for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v)
   if (scenarioFilter) q.set('scenario', scenarioFilter)
   if ($('onlyProblems').checked) q.set('problems', '1')
+  if ($('onlyCommented').checked) q.set('commented', '1')
   if ($('searchBox').value.trim()) q.set('q', $('searchBox').value.trim())
   return q.toString()
 }
@@ -478,7 +514,7 @@ async function loadFilterValues () {
   for (const sel of document.querySelectorAll('#filters select[data-f]')) {
     const f = sel.dataset.f
     if (f === 'rating') { sel.value = filters.rating || ''; continue }
-    const list = values[f] || []
+    const list = f === 'rated_by' ? (values.people || []) : (values[f] || [])
     const opts = list.map((v) => (typeof v === 'object'
       ? `<option value="${esc(v.value ?? v.v)}">${esc(v.label ?? v.v)}${v.count != null || v.c != null ? ` (${v.count ?? v.c})` : ''}</option>`
       : `<option value="${esc(v)}">${esc(v)}</option>`)).join('')
@@ -488,12 +524,13 @@ async function loadFilterValues () {
 }
 document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; refresh(false) } })
 $('onlyProblems').onchange = () => { page = 1; refresh(false) }
+$('onlyCommented').onchange = () => { page = 1; refresh(false) }
 let searchTimer = null
 $('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
 $('clearFilters').onclick = () => {
   filters = {}
   document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = '' })
-  $('onlyProblems').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
+  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1
   renderCoverage(); refresh(false)
 }
 $('prevPage').onclick = () => { if (page > 1) { page -= 1; refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
@@ -506,7 +543,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function signature (i) {
-  return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.rated_by, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
 // Videos get their src only while near the viewport, and drop it again when scrolled away,
@@ -528,7 +565,7 @@ function renderGrid () {
   const from = pageInfo.total ? (pageInfo.page - 1) * pageInfo.pageSize + 1 : 0
   const to = from ? from + visible.length - 1 : 0
   $('filterCount').textContent = `${pageInfo.total} rows match`
-  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('searchBox').value.trim()
+  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('onlyCommented').checked || $('searchBox').value.trim()
   $('pageInfo').textContent = pageInfo.total ? `${from}–${to} of ${pageInfo.total} · page ${pageInfo.page}/${pageInfo.pages}` : filtered ? 'no rows match these filters (default view is done + unrated — press clear to see everything)' : 'no rows'
   $('prevPage').disabled = pageInfo.page <= 1
   $('nextPage').disabled = pageInfo.page >= pageInfo.pages
@@ -608,9 +645,14 @@ function cardHtml (i) {
     </div>
     <div class="controls rate" data-id="${i.id}">
       ${['prod', 'local', 'tie'].map((r) => `<button class="${i.rating === r ? 'sel' : ''}" onclick="rate(${i.id}, '${r}', ${i.rating === r})">${r === 'prod' ? 'Prod better' : r === 'local' ? 'Local better' : 'Tie'}</button>`).join('')}
-      ${i.rated_at ? `<small style="color:var(--muted)">rated ${esc(i.rated_at)}</small>` : ''}
+      ${i.rated_at ? `<small style="color:var(--muted)">rated${i.rated_by ? ` by <b>${esc(i.rated_by)}</b>` : ''} ${esc(i.rated_at)}</small>` : ''}
     </div>
-    <input class="note" placeholder="note (optional)" value="${esc(i.note || '')}" onchange="saveNote(${i.id}, this.value)">`
+    <input class="note" placeholder="note (optional)" value="${esc(i.note || '')}" onchange="saveNote(${i.id}, this.value)">
+    <details class="comments" id="comments-${i.id}" ontoggle="if (this.open) loadComments(${i.id})">
+      <summary>💬 ${i.comment_count || 0} comment${i.comment_count === 1 ? '' : 's'}${i.commenters ? ` · ${esc(i.commenters.split(',').join(', '))}` : ''}</summary>
+      <div class="clist"></div>
+      <div class="cform"><textarea placeholder="Write a comment…" onkeydown="if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') postComment(${i.id}, this)"></textarea><button onclick="postComment(${i.id}, this.previousElementSibling)">Post</button></div>
+    </details>`
 }
 
 const vids = (id) => [...document.querySelectorAll(`#card-${id} video`)]
@@ -625,7 +667,35 @@ window.copyText = async (btn, id) => {
   try { await navigator.clipboard.writeText(text) } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() }
   const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = old }, 1200)
 }
-window.rate = async (id, rating, already) => { await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
+const commentHtml = (c) => `<div class="comment" data-id="${c.id}">${avatar(c.author)}<div class="body"><div class="who"><b>${esc(c.author)}</b> · ${esc(fmtTime(c.created_at))}${c.author === userName ? ` <button class="del" title="delete" onclick="deleteComment(${c.id}, this)">✕</button>` : ''}</div><div class="text">${esc(c.body)}</div></div></div>`
+window.loadComments = async (id) => {
+  const box = document.querySelector(`#comments-${id} .clist`)
+  if (!box) return
+  const list = await api(`/api/instances/${id}/comments`)
+  box.innerHTML = list.length ? list.map(commentHtml).join('') : '<div class="hint">no comments yet</div>'
+}
+window.postComment = async (id, ta) => {
+  const body = ta.value.trim()
+  if (!body) return
+  if (!askName()) return
+  try {
+    const c = await api(`/api/instances/${id}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body, author: userName }) })
+    ta.value = ''
+    const box = document.querySelector(`#comments-${id} .clist`)
+    if (box.querySelector('.hint')) box.innerHTML = ''
+    box.insertAdjacentHTML('beforeend', commentHtml(c))
+    const sum = document.querySelector(`#comments-${id} summary`)
+    const n = box.querySelectorAll('.comment').length
+    sum.textContent = `💬 ${n} comment${n === 1 ? '' : 's'}`
+  } catch (err) { alert(err.message) }
+}
+window.deleteComment = async (cid, btn) => {
+  if (!confirm('Delete this comment?')) return
+  try { await api(`/api/comments/${cid}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) }); btn.closest('.comment').remove() } catch (err) { alert(err.message) }
+}
+
+window.rate = async (id, rating, already) => {
+  if (!already && !askName()) return await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
 window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, { note }) }
 window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
 window.showGraph = async (id) => {

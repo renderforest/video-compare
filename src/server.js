@@ -177,6 +177,11 @@ const instanceFilters = (query) => {
     params.push(query.rating)
   }
   if (query.problems === '1') where.push("checks_json LIKE '%\"ok\":false%'")
+  if (query.commented === '1') where.push('EXISTS (SELECT 1 FROM comments c WHERE c.instance_id = i.id)')
+  if (query.rated_by) {
+    where.push('rated_by = ?')
+    params.push(query.rated_by)
+  }
   if (query.q) {
     where.push('(prompt LIKE ? OR source_id = ?)')
     params.push(`%${query.q}%`, query.q)
@@ -191,14 +196,16 @@ app.get('/api/runs/:id/instances', (req, res) => {
   const { where, params } = instanceFilters({ ...req.query, runId: req.params.id })
   const withProgress = (i) => ({ ...i, progress: i.status === 'running' ? currentProgress(i.id) : null })
   if (req.query.page === undefined) {
-    return res.json(db.prepare(`SELECT * FROM instances WHERE ${where} ORDER BY scenario_key, id`).all(...params).map(withProgress))
+    return res.json(db.prepare(`SELECT i.* FROM instances i WHERE ${where} ORDER BY scenario_key, id`).all(...params).map(withProgress))
   }
   const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize) || 24))
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM instances WHERE ${where}`).get(...params).c
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM instances i WHERE ${where}`).get(...params).c
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const page = Math.min(pages, Math.max(1, Number(req.query.page) || 1))
   const rows = db
-    .prepare(`SELECT * FROM instances WHERE ${where} ORDER BY scenario_key, id LIMIT ? OFFSET ?`)
+    .prepare(`SELECT i.*, (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id) AS comment_count,
+                     (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters
+              FROM instances i WHERE ${where} ORDER BY scenario_key, id LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize)
     .map(withProgress)
   res.json({ total, page, pages, pageSize, rows })
@@ -213,7 +220,9 @@ app.get('/api/runs/:id/filters', (req, res) => {
     .all(runId)
     .map((r) => ({ value: `${r.vt}|${r.st}`, label: r.vt ? `${r.vt} / ${r.st}` : r.st, count: r.c }))
   const statuses = db.prepare('SELECT status AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1').all(runId)
-  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, status: statuses })
+  const people = db.prepare(`SELECT DISTINCT author AS v FROM comments WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?)
+                             UNION SELECT DISTINCT rated_by FROM instances WHERE run_id = ? AND rated_by IS NOT NULL ORDER BY 1`).all(runId, runId).map((r) => r.v)
+  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, status: statuses, people })
 })
 
 app.post('/api/upload', uploadCsv.single('csv'), handle(async (req, res) => {
@@ -326,11 +335,38 @@ app.get('/api/runs/:id/summary.csv', (req, res) => {
 
 // ---- instances ----
 
+const authorOf = (req) => String(req.body?.author || req.get('x-user') || '').trim().slice(0, 60)
+
 app.post('/api/instances/:id/rating', (req, res) => {
   const { rating } = req.body || {}
   if (![null, 'prod', 'local', 'tie'].includes(rating)) return res.status(400).json({ error: 'rating must be prod|local|tie|null' })
-  const result = db.prepare("UPDATE instances SET rating = ?, rated_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END WHERE id = ?").run(rating, rating, req.params.id)
+  const author = rating ? authorOf(req) || null : null
+  const result = db.prepare("UPDATE instances SET rating = ?, rated_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, rated_by = ? WHERE id = ?").run(rating, rating, author, req.params.id)
   if (!result.changes) return res.status(404).json({ error: 'Instance not found' })
+  res.json({ ok: true })
+})
+
+// ---- comments (per user; the author is whatever name the browser sends) ----
+
+app.get('/api/instances/:id/comments', (req, res) => {
+  res.json(db.prepare('SELECT id, author, body, created_at FROM comments WHERE instance_id = ? ORDER BY id').all(req.params.id))
+})
+
+app.post('/api/instances/:id/comments', (req, res) => {
+  const author = authorOf(req)
+  const body = String(req.body?.body || '').trim().slice(0, 4000)
+  if (!author) return res.status(400).json({ error: 'Set your name first (top right)' })
+  if (!body) return res.status(400).json({ error: 'Empty comment' })
+  if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'Instance not found' })
+  const { lastInsertRowid } = db.prepare('INSERT INTO comments (instance_id, author, body) VALUES (?, ?, ?)').run(req.params.id, author, body)
+  res.json(db.prepare('SELECT id, author, body, created_at FROM comments WHERE id = ?').get(lastInsertRowid))
+})
+
+app.delete('/api/comments/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Comment not found' })
+  if (row.author !== authorOf(req)) return res.status(403).json({ error: 'Only the author can delete a comment' })
+  db.prepare('DELETE FROM comments WHERE id = ?').run(row.id)
   res.json({ ok: true })
 })
 

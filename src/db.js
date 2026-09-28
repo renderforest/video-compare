@@ -81,6 +81,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_instances_run ON instances (run_id, sampled, status);
   CREATE INDEX IF NOT EXISTS idx_instances_scenario ON instances (run_id, scenario_key);
   CREATE INDEX IF NOT EXISTS idx_instances_gen_key ON instances (gen_key);
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_instance ON comments (instance_id, id);
 `)
 
 // additive migrations for DBs created before a column existed
@@ -90,7 +99,8 @@ for (const [table, column] of [
   ['instances', 'output_thumb TEXT'],
   ['instances', 'prod_thumb TEXT'],
   ['runs', 'wanted_active INTEGER NOT NULL DEFAULT 0'],
-  ['runs', 'last_stop TEXT']
+  ['runs', 'last_stop TEXT'],
+  ['instances', 'rated_by TEXT']
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
