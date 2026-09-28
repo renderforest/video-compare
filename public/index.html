@@ -295,8 +295,11 @@ async function renderModeTable (run) {
     const plan = modePlan[mode]
     const options = '<option value="">auto</option>' + workflows.map((w) => `<option value="${w.id}" ${Number(chosen[mode]) === w.id ? 'selected' : ''} ${w.capabilities.modes[mode] ? '' : 'disabled'}>${esc(w.name)}${w.capabilities.modes[mode] ? '' : ' (cannot)'}</option>`).join('')
     const badge = plan ? `<span class="badge yes">${esc(plan.name)} <small>(${plan.source})</small></span>` : '<span class="badge no">none — rows skipped</span>'
-    return `<tr><td>${mode} <small style="color:var(--muted)">${label}</small></td><td><select data-mode="${mode}" style="padding:3px 6px">${options}</select></td><td>${badge}</td></tr>`
+    return `<tr><td>${mode} <small style="color:var(--muted)">${label}</small></td><td><select data-mode="${mode}" style="padding:3px 6px">${options}</select> <button data-upload-mode="${mode}" style="padding:3px 8px" title="Upload a workflow and use it for ${label}">Upload</button></td><td>${badge}</td></tr>`
   }).join('')
+  $('wfModes').querySelectorAll('button[data-upload-mode]').forEach((btn) => {
+    btn.onclick = () => { uploadForMode = btn.dataset.uploadMode; $('wfFile').click() }
+  })
   $('wfModes').querySelectorAll('select[data-mode]').forEach((sel) => {
     sel.onchange = async () => {
       if (!currentRunId) return
@@ -328,9 +331,12 @@ $('wfSelect').onchange = async () => {
     await renderModeTable({ settings: { workflowsByMode: workflowsByModeFromUi() } })
   }
 }
-$('wfUploadBtn').onclick = () => $('wfFile').click()
+let uploadForMode = null // set when the Upload button of a mode row was used
+$('wfUploadBtn').onclick = () => { uploadForMode = null; $('wfFile').click() }
 $('wfFile').onchange = async () => {
   const file = $('wfFile').files[0]
+  const targetMode = uploadForMode
+  uploadForMode = null
   if (!file) return
   const suggested = file.name.replace(/\.json$/i, '')
   const name = prompt('Name for this workflow:', suggested)
@@ -339,9 +345,20 @@ $('wfFile').onchange = async () => {
   form.append('workflow', file); form.append('name', name || suggested)
   try {
     const res = await api('/api/workflows', { method: 'POST', body: form })
-    await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)); $('wfSelect').value = res.id; renderCaps()
-    if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
     const lines = [`Uploaded "${res.name}" ✓`]
+    if (targetMode) {
+      // assign to that mode only; the default workflow stays as it is
+      if (!res.capabilities.modes[targetMode]) lines.push(`⚠ this graph has no inputs for mode ${targetMode} (${MODE_LABELS[targetMode]}) — check Details → bindings`)
+      else if (currentRunId) {
+        const workflowsByMode = { ...workflowsByModeFromUi(), [targetMode]: res.id }
+        await put(`/api/runs/${currentRunId}/settings`, { workflowsByMode }).catch(() => {})
+      }
+      await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null))
+    } else {
+      await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)); $('wfSelect').value = res.id; renderCaps()
+      if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
+      await renderModeTable(await api(`/api/runs/${currentRunId}`).catch(() => null))
+    }
     if (res.missingClasses && res.missingClasses.length) lines.push(`⚠ ComfyUI lacks node classes: ${res.missingClasses.join(', ')}`)
     lines.push(...res.notes.map((n) => `⚠ ${n}`))
     alert(lines.join('\n'))

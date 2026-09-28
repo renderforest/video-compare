@@ -18,7 +18,7 @@ import crypto from 'node:crypto'
 export const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex')
 
 // bump when detectBindings learns something new; older uploads are re-detected on read
-export const DETECTOR_VERSION = 2
+export const DETECTOR_VERSION = 3
 
 export const onlyNodes = (template) =>
   Object.fromEntries(Object.entries(template).filter(([, v]) => v && typeof v === 'object' && v.class_type))
@@ -126,7 +126,40 @@ export const detectBindings = (graph) => {
       consumers.get(src).add(name)
     }
   }
-  const feeds = (id) => [...(consumers.get(id) || [])].join(' ')
+  // input names reached from a loader, following pass-through nodes (resize, crop, …) up to 4 hops
+  const downstreamInputs = new Map() // node id → Set of input names
+  for (const [, node] of entries) {
+    for (const [name, value] of Object.entries(node.inputs || {})) {
+      if (!isLink(value)) continue
+      const src = String(value[0])
+      if (!downstreamInputs.has(src)) downstreamInputs.set(src, new Set())
+      downstreamInputs.get(src).add(name)
+    }
+  }
+  const outgoing = new Map() // node id → consumer node ids
+  for (const [id, node] of entries) {
+    for (const value of Object.values(node.inputs || {})) {
+      if (!isLink(value)) continue
+      const src = String(value[0])
+      if (!outgoing.has(src)) outgoing.set(src, new Set())
+      outgoing.get(src).add(id)
+    }
+  }
+  const feeds = (id) => {
+    const names = new Set()
+    let frontier = [id]
+    for (let hop = 0; hop < 4 && frontier.length; hop += 1) {
+      const next = []
+      for (const n of frontier) {
+        for (const name of downstreamInputs.get(n) || []) names.add(name)
+        for (const c of outgoing.get(n) || []) next.push(c)
+      }
+      // stop following once a video conditioning node has been reached
+      if ([...names].some((n) => /first_frame|last_frame|ref_image|start_image|end_image/i.test(n))) break
+      frontier = next
+    }
+    return [...names].join(' ')
+  }
   const roleFor = (node, id, index) => {
     const fed = feeds(id)
     if (/last_frame|end_image|end_frame/i.test(fed)) return 'lastFrame'
