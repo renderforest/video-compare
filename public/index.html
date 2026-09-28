@@ -573,10 +573,19 @@ async function loadFilterValues () {
     sel.value = filters[f] || ''
   }
 }
-document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; page = 1; pinned.clear(); refresh(false) } })
+const liftUnrated = () => {
+  if (filters.rating === 'unrated') { filters.rating = ''; document.querySelector('#filters select[data-f="rating"]').value = '' }
+}
+document.querySelectorAll('#filters select[data-f]').forEach((sel) => {
+  sel.onchange = () => {
+    filters[sel.dataset.f] = sel.value
+    if ((sel.dataset.f === 'rated_by' || sel.dataset.f === 'favorited_by') && sel.value) liftUnrated()
+    page = 1; pinned.clear(); refresh(false)
+  }
+})
 $('onlyProblems').onchange = () => { page = 1; refresh(false) }
-$('onlyCommented').onchange = () => { page = 1; refresh(false) }
-$('onlyFavorites').onchange = async () => { if ($('onlyFavorites').checked && !(await ensureUser())) { $('onlyFavorites').checked = false; return } page = 1; refresh(false) }
+$('onlyCommented').onchange = () => { if ($('onlyCommented').checked) liftUnrated(); page = 1; pinned.clear(); refresh(false) }
+$('onlyFavorites').onchange = async () => { if ($('onlyFavorites').checked && !(await ensureUser())) { $('onlyFavorites').checked = false; return } if ($('onlyFavorites').checked) liftUnrated(); page = 1; pinned.clear(); refresh(false) }
 let searchTimer = null
 $('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
 $('clearFilters').onclick = () => {
@@ -617,7 +626,7 @@ function renderGrid () {
   const visible = instances
   const from = pageInfo.total ? (pageInfo.page - 1) * pageInfo.pageSize + 1 : 0
   const to = from ? from + visible.length - 1 : 0
-  $('filterCount').textContent = `${pageInfo.total} rows match`
+  $('filterCount').textContent = `${pageInfo.total} rows match` + (filters.rating === 'unrated' ? ' · showing unrated only (rated rows are hidden — set rating to see them)' : '')
   const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('onlyCommented').checked || $('onlyFavorites').checked || $('searchBox').value.trim()
   $('pageInfo').textContent = pageInfo.total ? `${from}–${to} of ${pageInfo.total} · page ${pageInfo.page}/${pageInfo.pages}` : filtered ? 'no rows match these filters (default view is done + unrated — press clear to see everything)' : 'no rows'
   $('prevPage').disabled = pageInfo.page <= 1
