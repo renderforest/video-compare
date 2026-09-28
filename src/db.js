@@ -100,7 +100,8 @@ for (const [table, column] of [
   ['instances', 'prod_thumb TEXT'],
   ['runs', 'wanted_active INTEGER NOT NULL DEFAULT 0'],
   ['runs', 'last_stop TEXT'],
-  ['instances', 'rated_by TEXT']
+  ['instances', 'rated_by TEXT'],
+  ["comments", "side TEXT NOT NULL DEFAULT 'local' CHECK (side IN ('prod', 'local'))"]
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)

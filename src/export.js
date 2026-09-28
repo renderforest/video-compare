@@ -59,7 +59,8 @@ export const exportInstancesCsv = (runId) => {
         ratedBy: i.rated_by,
         ratedAt: i.rated_at,
         note: i.note,
-        comments: db.prepare('SELECT author, body, created_at FROM comments WHERE instance_id = ? ORDER BY id').all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n')
+        prodComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'prod' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n'),
+        localComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'local' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n')
       }
     })
   return stringify(rows, { header: true })

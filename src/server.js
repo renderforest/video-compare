@@ -204,6 +204,8 @@ app.get('/api/runs/:id/instances', (req, res) => {
   const page = Math.min(pages, Math.max(1, Number(req.query.page) || 1))
   const rows = db
     .prepare(`SELECT i.*, (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id) AS comment_count,
+                     (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'prod') AS prod_comment_count,
+                     (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'local') AS local_comment_count,
                      (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters
               FROM instances i WHERE ${where} ORDER BY scenario_key, id LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize)
@@ -348,18 +350,21 @@ app.post('/api/instances/:id/rating', (req, res) => {
 
 // ---- comments (per user; the author is whatever name the browser sends) ----
 
+// two threads per row: one about the production clip, one about the local (new workflow) clip
 app.get('/api/instances/:id/comments', (req, res) => {
-  res.json(db.prepare('SELECT id, author, body, created_at FROM comments WHERE instance_id = ? ORDER BY id').all(req.params.id))
+  const rows = db.prepare('SELECT id, side, author, body, created_at FROM comments WHERE instance_id = ? ORDER BY id').all(req.params.id)
+  res.json(req.query.side ? rows.filter((c) => c.side === req.query.side) : rows)
 })
 
 app.post('/api/instances/:id/comments', (req, res) => {
   const author = authorOf(req)
   const body = String(req.body?.body || '').trim().slice(0, 4000)
+  const side = req.body?.side === 'prod' ? 'prod' : 'local'
   if (!author) return res.status(400).json({ error: 'Set your name first (top right)' })
   if (!body) return res.status(400).json({ error: 'Empty comment' })
   if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'Instance not found' })
-  const { lastInsertRowid } = db.prepare('INSERT INTO comments (instance_id, author, body) VALUES (?, ?, ?)').run(req.params.id, author, body)
-  res.json(db.prepare('SELECT id, author, body, created_at FROM comments WHERE id = ?').get(lastInsertRowid))
+  const { lastInsertRowid } = db.prepare('INSERT INTO comments (instance_id, side, author, body) VALUES (?, ?, ?, ?)').run(req.params.id, side, author, body)
+  res.json(db.prepare('SELECT id, side, author, body, created_at FROM comments WHERE id = ?').get(lastInsertRowid))
 })
 
 app.delete('/api/comments/:id', (req, res) => {

@@ -22,7 +22,7 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
    play in sync, rate, add notes; export per-row and per-cell summary CSVs.
 
 Comments and names: the header asks for a display name once (kept in the browser) and sends it with every rating
-and comment (`x-user` header / `author` field). Each card has a comment thread; only the author can delete their
+and comment (`x-user` header / `author` field). Each card has two comment threads, one under the production clip and one under the local clip; only the author can delete their
 comment. Filters: "rated by", "with comments". Exports carry `ratedBy` and a `comments` column.
 
 Thumbnails: when a clip finishes (hook `generation:finished` in `src/hooks.js`) and when a production clip is
