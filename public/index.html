@@ -186,7 +186,8 @@
     <select data-f="quality"><option value="">quality</option></select>
     <select data-f="aspect"><option value="">aspect</option></select>
     <select data-f="duration_bucket"><option value="">duration</option></select>
-    <select data-f="style"><option value="">style</option></select>
+    <select data-f="video_type"><option value="">video type (picker card)</option></select>
+    <select data-f="image_style"><option value="">image style</option></select>
     <select data-f="status"><option value="">status</option></select>
     <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
     <input type="search" id="searchBox" placeholder="prompt or project id" size="18">
@@ -546,7 +547,7 @@ function renderStats (run) {
 function renderCoverage () {
   $('coverageCard').hidden = !coverageRows.length
   $('covCount').textContent = `${coverageRows.length} cells, ${coverageRows.filter((c) => !c.sampled).length} empty`
-  const head = '<tr><th>mode</th><th>quality</th><th>aspect</th><th>duration</th><th>video type</th><th>style</th><th>pool</th><th>sampled</th><th>done</th><th>failed</th><th>unsupp.</th><th>rated</th><th>local wins</th><th>prod wins</th><th>ties</th></tr>'
+  const head = '<tr><th>mode</th><th>quality</th><th>aspect</th><th>duration</th><th>video type (picker card)</th><th>image style</th><th>pool</th><th>sampled</th><th>done</th><th>failed</th><th>unsupp.</th><th>rated</th><th>local wins</th><th>prod wins</th><th>ties</th></tr>'
   $('covTable').innerHTML = head + coverageRows.map((c) => `<tr data-key="${esc(c.scenario_key)}" class="${scenarioFilter === c.scenario_key ? 'sel' : ''}">
     <td>${esc(c.mode)}</td><td>${c.quality}</td><td>${esc(c.aspect)}</td><td>${esc(c.duration_bucket)}</td><td>${esc(c.video_type || '-')}</td><td>${esc(c.style)}</td>
     <td class="num">${c.pool}</td><td class="num ${c.sampled ? '' : 'empty'}">${c.sampled || 0}</td><td class="num">${c.done || 0}</td><td class="num">${c.failed || 0}</td><td class="num">${c.unsupported || 0}</td>
@@ -569,7 +570,8 @@ async function loadFilterValues () {
     const opts = list.map((v) => (typeof v === 'object'
       ? `<option value="${esc(v.value ?? v.v)}">${esc(v.label ?? v.v)}${v.count != null || v.c != null ? ` (${v.count ?? v.c})` : ''}</option>`
       : `<option value="${esc(v)}">${esc(v)}</option>`)).join('')
-    sel.innerHTML = `<option value="">${f.replace('_', ' ')}</option>` + opts
+    const labels = { video_type: 'video type (picker card)', image_style: 'image style', duration_bucket: 'duration', rated_by: 'rated by', favorited_by: 'favorited by' }
+    sel.innerHTML = `<option value="">${labels[f] || f}</option>` + opts
     sel.value = filters[f] || ''
   }
 }
@@ -686,7 +688,9 @@ function cardHtml (i) {
     <div class="meta">
       <span class="badge ${i.status}">${i.status}${i.status === 'running' ? progress : ''}</span>
       <span class="badge">${esc(i.mode)}</span><span class="badge">${i.quality}p</span><span class="badge">${esc(i.aspect)}${i.aspect_source !== 'row' ? '*' : ''}</span>
-      <span class="badge">${i.duration}s</span><span class="badge">${esc(styleOf(i))}</span>
+      <span class="badge">${i.duration}s</span>
+      <span class="badge" title="video type = the card chosen in the video picker (video_types)">video type: ${esc(i.video_type_name || i.video_type || '—')}</span>
+      <span class="badge" title="image style = the image style applied to the frames (ai_image_styles via meta.imageStyleId)">image style: ${esc(i.style_name || '—')}</span>
       ${i.flow ? `<span class="badge">${esc(i.flow)}</span>` : ''}
       ${i.duration_ms ? `<span class="badge">${Math.round(i.duration_ms / 1000)}s gen${i.reused ? ' (reused)' : ''}</span>` : ''}
       ${i.seed != null ? `<span class="badge">seed ${i.seed}</span>` : ''}

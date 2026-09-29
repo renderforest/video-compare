@@ -171,6 +171,14 @@ const instanceFilters = (query) => {
     where.push("(COALESCE(video_type_name, video_type, '') || '|' || COALESCE(style_name, 'none')) = ?")
     params.push(query.style)
   }
+  if (query.video_type) {
+    where.push(query.video_type === '-' ? "COALESCE(video_type_name, video_type) IS NULL" : 'COALESCE(video_type_name, video_type) = ?')
+    if (query.video_type !== '-') params.push(query.video_type)
+  }
+  if (query.image_style) {
+    where.push(query.image_style === '-' ? 'style_name IS NULL' : 'style_name = ?')
+    if (query.image_style !== '-') params.push(query.image_style)
+  }
   if (query.rating === 'unrated') where.push('rating IS NULL')
   else if (query.rating) {
     where.push('rating = ?')
@@ -235,7 +243,9 @@ app.get('/api/runs/:id/filters', (req, res) => {
   const people = db.prepare(`SELECT DISTINCT author AS v FROM comments WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?)
                              UNION SELECT DISTINCT rated_by FROM instances WHERE run_id = ? AND rated_by IS NOT NULL
                              UNION SELECT DISTINCT user FROM favorites WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?) ORDER BY 1`).all(runId, runId, runId).map((r) => r.v)
-  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, status: statuses, people })
+  const videoTypes = db.prepare("SELECT COALESCE(video_type_name, video_type, '-') AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1").all(runId)
+  const imageStyles = db.prepare("SELECT COALESCE(style_name, '-') AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1").all(runId)
+  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, video_type: videoTypes, image_style: imageStyles, status: statuses, people })
 })
 
 app.post('/api/upload', uploadCsv.single('csv'), handle(async (req, res) => {
