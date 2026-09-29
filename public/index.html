@@ -87,6 +87,20 @@
   dialog.text { padding: 16px; width: min(900px, 92vw); }
   dialog.text pre { max-height: 70vh; overflow: auto; font-size: 12px; }
   dialog::backdrop { background: rgba(0,0,0,.6); }
+  .mini { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; cursor: pointer; }
+  .mini:hover { color: var(--accent); border-color: var(--accent); }
+  #cmp { position: fixed; inset: 0; z-index: 50; background: #000; color: #eee; display: flex; flex-direction: column; }
+  #cmp[hidden] { display: none; }
+  .cmp-vids { flex: 1; display: flex; gap: 4px; min-height: 0; padding: 4px; }
+  .cmp-vids.stacked { flex-direction: column; }
+  .cmp-vids figure { flex: 1; margin: 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .cmp-vids figcaption { font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: .04em; padding: 2px 6px; }
+  .cmp-vids video { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .cmp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #111; border-top: 1px solid #222; flex-wrap: wrap; }
+  .cmp-bar button { background: #222; color: #eee; border-color: #333; }
+  .cmp-bar input[type=range] { flex: 1; min-width: 160px; }
+  .cmp-bar label { color: #aaa; }
+  .cmp-meta { color: #888; font-size: 12px; }
   .empty { color: var(--muted); padding: 60px 0; text-align: center; }
   .comments { margin-top: 6px; padding-top: 4px; }
   .comments summary { cursor: pointer; color: var(--muted); font-size: 12px; }
@@ -212,6 +226,20 @@
   <div class="empty" id="empty" hidden>No runs yet — upload a production CSV above, or run <code>npm run import -- &lt;csv&gt;</code>.</div>
 </main>
 <dialog id="zoom"><img id="zoomImg" alt=""></dialog>
+<div id="cmp" hidden>
+  <div class="cmp-vids"><figure><figcaption>Production</figcaption><video id="cmpProd" playsinline loop></video></figure><figure><figcaption>Local (new workflow)</figcaption><video id="cmpLocal" playsinline loop></video></figure></div>
+  <div class="cmp-bar">
+    <button id="cmpPlay">▶</button>
+    <button id="cmpRestart" title="restart both">↺</button>
+    <button id="cmpStep" title="step one frame (.)">›</button>
+    <input type="range" id="cmpSeek" min="0" max="1000" value="0" step="1">
+    <span id="cmpTime">0:00 / 0:00</span>
+    <label><input type="checkbox" id="cmpMute"> mute</label>
+    <label><input type="checkbox" id="cmpSwap"> swap sides</label>
+    <span class="cmp-meta" id="cmpMeta"></span>
+    <button id="cmpClose" title="close (Esc)">✕</button>
+  </div>
+</div>
 <dialog id="textDlg" class="text"><div id="textDlgBody"></div></dialog>
 <dialog id="userDlg" class="text" style="width:min(520px,92vw)">
   <h3 style="margin:0 0 4px">Who are you?</h3>
@@ -601,7 +629,7 @@ $('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; pinned.c
 $('pageSize').onchange = () => { page = 1; pinned.clear(); refresh(false) }
 $('orderSel').onchange = () => { page = 1; pinned.clear(); refresh(false) }
 document.addEventListener('keydown', (e) => {
-  if (e.target.matches('input, textarea, select') || $('textDlg').open) return
+  if (e.target.matches('input, textarea, select') || $('textDlg').open || !$('cmp').hidden) return
   if (e.key === 'ArrowLeft') $('prevPage').click()
   if (e.key === 'ArrowRight') $('nextPage').click()
 })
@@ -668,7 +696,7 @@ function videoOrPlaceholder ({ src, fallback, label, note, side, poster, comment
   const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
   // with a poster the browser needs nothing until play: no metadata fetch, no decoder
   const preload = poster ? 'none' : 'metadata'
-  return `<figure><figcaption><span>${label}</span>${src ? `<a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</figcaption>` +
+  return `<figure><figcaption><span>${label}</span><span>${src ? `<button class="mini" onclick="fullscreenOne(this)" title="full screen">⛶</button> <a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</span></figcaption>` +
     (src ? `<video controls preload="${preload}" loop playsinline data-side="${side}" data-src="${esc(src)}"${poster ? ` poster="${esc(poster)}"` : ''}${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) +
     (comments ? commentsBlock(comments) : '') + '</figure>'
 }
@@ -706,6 +734,7 @@ function cardHtml (i) {
     </div>
     <div class="controls">
       <button class="star ${i.is_favorite ? 'sel' : ''}" onclick="toggleFavorite(${i.id}, this)" title="${i.favorited_by ? 'favorited by ' + esc(i.favorited_by.split(',').join(', ')) : 'add to my favorites'}">${i.is_favorite ? '★' : '☆'}${i.favorited_by ? ` ${i.favorited_by.split(',').length}` : ''}</button>
+      <button onclick="compareFullscreen(${i.id})" title="both videos side by side in full screen, synced">⛶ compare full screen</button>
       <button onclick="playBoth(${i.id})">▶ play both</button>
       <button onclick="pauseBoth(${i.id})">❚❚ pause</button>
       <button onclick="restartBoth(${i.id})">↺ restart</button>
@@ -730,6 +759,74 @@ function cardHtml (i) {
 }
 
 const vids = (id) => [...document.querySelectorAll(`#card-${id} video`)]
+
+// ---- full screen: one video (native) or both side by side, synced ----
+window.fullscreenOne = (btn) => {
+  const v = btn.closest('figure').querySelector('video')
+  if (!v) return
+  if (!v.src && v.dataset.src) v.src = v.dataset.src
+  const fs = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen
+  if (fs) fs.call(v)
+  v.play().catch(() => {})
+}
+
+const cmp = { prod: null, local: null, raf: null }
+const cmpVideos = () => [$('cmpProd'), $('cmpLocal')]
+const fmtClock = (t) => { t = Math.max(0, t || 0); return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${String(Math.floor((t % 1) * 10))}` }
+const cmpDuration = () => Math.max(...cmpVideos().map((v) => v.duration || 0))
+const cmpUpdateBar = () => {
+  const a = $('cmpProd'); const d = cmpDuration()
+  $('cmpSeek').value = d ? Math.round((a.currentTime / d) * 1000) : 0
+  $('cmpTime').textContent = `${fmtClock(a.currentTime)} / ${fmtClock(d)}`
+  $('cmpPlay').textContent = a.paused ? '▶' : '❚❚'
+  // keep the two clips within a frame of each other (they may differ in length by a few frames)
+  const b = $('cmpLocal')
+  if (!a.paused && Math.abs(a.currentTime - b.currentTime) > 0.08 && b.duration) b.currentTime = Math.min(a.currentTime, b.duration - 0.01)
+  cmp.raf = requestAnimationFrame(cmpUpdateBar)
+}
+window.compareFullscreen = (id) => {
+  const row = instances.find((x) => x.id === id)
+  if (!row) return
+  const [p, l] = cmpVideos()
+  const prodSrc = row.prod_video_path ? `/prod/${encodeURIComponent(row.prod_video_path)}` : row.prod_video_url
+  const localSrc = row.output_path ? `/outputs/${encodeURIComponent(row.output_path)}` : ''
+  if (!localSrc) return alert('The local clip is not generated yet')
+  p.src = prodSrc; l.src = localSrc
+  p.poster = row.prod_thumb ? `/thumbs/${encodeURIComponent(row.prod_thumb)}` : ''; l.poster = row.output_thumb ? `/thumbs/${encodeURIComponent(row.output_thumb)}` : ''
+  p.muted = l.muted = $('cmpMute').checked
+  document.querySelector('.cmp-vids').classList.toggle('stacked', row.aspect === '16:9' && window.innerWidth < window.innerHeight)
+  $('cmpMeta').textContent = `#${row.source_id || row.id} · ${row.mode} · ${row.quality}p ${row.aspect} · ${row.duration}s · ${row.prompt.slice(0, 90)}${row.prompt.length > 90 ? '…' : ''}`
+  $('cmp').hidden = false
+  const fs = $('cmp').requestFullscreen || $('cmp').webkitRequestFullscreen
+  if (fs) fs.call($('cmp')).catch(() => {})
+  p.currentTime = 0; l.currentTime = 0
+  Promise.all([p.play(), l.play()]).catch(() => {})
+  cancelAnimationFrame(cmp.raf); cmpUpdateBar()
+}
+const cmpClose = () => {
+  cancelAnimationFrame(cmp.raf)
+  for (const v of cmpVideos()) { v.pause(); v.removeAttribute('src'); v.load() }
+  $('cmp').hidden = true
+  if (document.fullscreenElement === $('cmp')) document.exitFullscreen().catch(() => {})
+}
+$('cmpClose').onclick = cmpClose
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && !$('cmp').hidden) cmpClose() })
+$('cmpPlay').onclick = () => { const [p, l] = cmpVideos(); if (p.paused) { l.currentTime = p.currentTime; Promise.all([p.play(), l.play()]).catch(() => {}) } else { p.pause(); l.pause() } }
+$('cmpRestart').onclick = () => { for (const v of cmpVideos()) v.currentTime = 0 }
+$('cmpStep').onclick = () => { for (const v of cmpVideos()) { v.pause(); v.currentTime = Math.min((v.duration || 0) - 0.001, v.currentTime + 1 / 24) } }
+$('cmpSeek').oninput = () => { const t = ($('cmpSeek').value / 1000) * cmpDuration(); for (const v of cmpVideos()) v.currentTime = Math.min(t, (v.duration || t) - 0.001) }
+$('cmpMute').onchange = () => { for (const v of cmpVideos()) v.muted = $('cmpMute').checked }
+$('cmpSwap').onchange = () => { const box = document.querySelector('.cmp-vids'); box.appendChild(box.firstElementChild) }
+document.addEventListener('keydown', (e) => {
+  if ($('cmp').hidden) return
+  if (e.key === 'Escape') { e.preventDefault(); cmpClose() }
+  if (e.key === ' ') { e.preventDefault(); $('cmpPlay').click() }
+  if (e.key === '.') { e.preventDefault(); $('cmpStep').click() }
+  if (e.key === ',') { e.preventDefault(); for (const v of cmpVideos()) { v.pause(); v.currentTime = Math.max(0, v.currentTime - 1 / 24) } }
+  if (e.key === 'r') { e.preventDefault(); $('cmpRestart').click() }
+  if (e.key === 'm') { e.preventDefault(); $('cmpMute').checked = !$('cmpMute').checked; $('cmpMute').onchange() }
+  if (e.key === 's') { e.preventDefault(); $('cmpSwap').checked = !$('cmpSwap').checked; $('cmpSwap').onchange() }
+})
 window.playBoth = (id) => { vids(id).forEach((v) => { if (!v.src && v.dataset.src) v.src = v.dataset.src; v.currentTime = 0; v.play().catch(() => {}) }) }
 window.pauseBoth = (id) => vids(id).forEach((v) => v.pause())
 window.restartBoth = (id) => vids(id).forEach((v) => { v.currentTime = 0 })
