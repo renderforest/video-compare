@@ -3,19 +3,21 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import db from './db.js'
 import config from './config.js'
 import { ComfyClient, fetchRetry } from './comfy.js'
+import { probeVideo } from './media.js'
+import { emit } from './hooks.js'
+import { lowDiskReason } from './disk.js'
 import { computeDims } from './dims.js'
-import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses } from './workflow.js'
-
-const execFileAsync = promisify(execFile)
+import { sha1, capabilities, unsupportedReason, assignMedia, buildPrompt, pruneEmptySlots, missingClasses, MODES, DETECTOR_VERSION, detectBindings } from './workflow.js'
 
 const activeRuns = new Set()
 const stopRequests = new Set()
 const progress = new Map() // instanceId → { value, max, node }
+const stopReasons = new Map() // runId → why the last run loop ended early (e.g. low disk)
+
+export const runStopReason = (runId) => stopReasons.get(runId) || null
 
 export const isRunActive = (runId) => activeRuns.has(runId)
 export const currentProgress = (instanceId) => progress.get(instanceId) || null
@@ -24,6 +26,7 @@ export const currentProgress = (instanceId) => progress.get(instanceId) || null
 export const requestStop = (runId) => {
   if (!activeRuns.has(runId)) return false
   stopRequests.add(runId)
+  db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'stopped by a user at ' || datetime('now') || ' UTC' WHERE id = ?").run(runId)
   return true
 }
 
@@ -65,8 +68,10 @@ const mediaUrls = (instance) => [
 const cacheProdVideo = async (instance) => {
   if (instance.prod_video_path && fs.existsSync(path.join(config.PROD_DIR, instance.prod_video_path))) return
   try {
-    const { filename } = await fetchCached({ url: instance.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
-    db.prepare('UPDATE instances SET prod_video_path = ? WHERE id = ?').run(filename, instance.id)
+    const { filename, filePath } = await fetchCached({ url: instance.prod_video_url, dir: config.PROD_DIR, fallbackExt: '.mp4' })
+    // the same production clip may be cached for several rows (re-sampled runs): tag them all
+    db.prepare('UPDATE instances SET prod_video_path = ? WHERE id = ? OR prod_video_url = ?').run(filename, instance.id, instance.prod_video_url)
+    await emit('prod:cached', { instance: { ...instance, prod_video_path: filename }, filePath })
   } catch (err) {
     console.error(`[run] prod video download failed for instance ${instance.id}: ${err.message}`)
   }
@@ -101,57 +106,7 @@ export const prefetchAssets = async (instances, { onProgress = () => {} } = {}) 
   return { total: unique.length, failed }
 }
 
-// ---- probing ----
-
-const hasFfprobe = (() => {
-  let cached = null
-  return async () => {
-    if (cached !== null) return cached
-    try {
-      await execFileAsync('ffprobe', ['-version'])
-      cached = true
-    } catch {
-      cached = false
-    }
-    return cached
-  }
-})()
-
-/** Basic stream facts for the checks; ffprobe when present, else the save node's own metadata. */
-export const probeVideo = async ({ filePath, meta }) => {
-  if (await hasFfprobe()) {
-    try {
-      const { stdout } = await execFileAsync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', filePath])
-      const info = JSON.parse(stdout)
-      const video = (info.streams || []).find((s) => s.codec_type === 'video') || {}
-      const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
-      const [num, den] = String(video.r_frame_rate || '0/1').split('/').map(Number)
-      return {
-        width: video.width || null,
-        height: video.height || null,
-        fps: den ? Math.round((num / den) * 100) / 100 : null,
-        frames: Number(video.nb_frames) || null,
-        duration: Number(info.format?.duration) || null,
-        hasAudio: !!audio,
-        sizeBytes: Number(info.format?.size) || fs.statSync(filePath).size,
-        source: 'ffprobe'
-      }
-    } catch {
-      // fall through to node metadata
-    }
-  }
-  const status = meta?._pixaroma_status || {}
-  return {
-    width: status.w || null,
-    height: status.h || null,
-    fps: status.fps || null,
-    frames: status.frames || null,
-    duration: status.duration || null,
-    hasAudio: null,
-    sizeBytes: fs.statSync(filePath).size,
-    source: 'save-node'
-  }
-}
+// ---- checks ----
 
 const runChecks = ({ probe, instance }) => {
   const checks = []
@@ -174,13 +129,7 @@ const runChecks = ({ probe, instance }) => {
 
 // ---- generation ----
 
-const loadWorkflow = (workflowId) => {
-  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
-  if (!row) throw new Error(`Workflow #${workflowId} not found`)
-  return { ...row, graph: JSON.parse(row.json), bindings: JSON.parse(row.bindings_json) }
-}
-
-const settingsOf = (run) => {
+export const settingsOf = (run) => {
   let settings = {}
   try {
     settings = JSON.parse(run.settings_json || '{}')
@@ -189,6 +138,55 @@ const settingsOf = (run) => {
   }
   return { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(settings.qualityMegapixels || {}) }, ...settings }
 }
+
+/** Loads a workflow row; bindings detected by an older detector are re-detected once and saved. */
+export const hydrate = (row) => {
+  const graph = JSON.parse(row.json)
+  let bindings = JSON.parse(row.bindings_json)
+  if ((row.detector_version || 1) < DETECTOR_VERSION) {
+    bindings = detectBindings(graph).bindings
+    db.prepare('UPDATE workflows SET bindings_json = ?, detector_version = ? WHERE id = ?').run(JSON.stringify(bindings), DETECTOR_VERSION, row.id)
+  }
+  return { ...row, graph, bindings, caps: capabilities(bindings) }
+}
+
+const loadWorkflow = (workflowId) => {
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
+  if (!row) throw new Error(`Workflow #${workflowId} not found`)
+  return hydrate(row)
+}
+
+/**
+ * Which workflow serves each mode for a run: an explicit per-mode choice
+ * (settings.workflowsByMode), else the run's default workflow when it supports
+ * the mode, else the newest uploaded workflow that does. Null = nothing can.
+ * @returns {{ byMode: Record<string, object|null>, sources: Record<string, string|null> }}
+ */
+export const resolveWorkflows = (run) => {
+  const all = db.prepare('SELECT * FROM workflows ORDER BY id DESC').all().map(hydrate)
+  const byId = new Map(all.map((w) => [w.id, w]))
+  const settings = settingsOf(run)
+  const explicit = settings.workflowsByMode || {}
+  const fallback = run.workflow_id ? byId.get(run.workflow_id) : null
+  const byMode = {}
+  const sources = {}
+  for (const mode of MODES) {
+    const chosen = explicit[mode] ? byId.get(Number(explicit[mode])) : null
+    if (chosen) {
+      byMode[mode] = chosen
+      sources[mode] = 'explicit'
+    } else if (fallback && fallback.caps.modes[mode]) {
+      byMode[mode] = fallback
+      sources[mode] = 'default'
+    } else {
+      const auto = all.find((w) => w.caps.modes[mode])
+      byMode[mode] = auto || null
+      sources[mode] = auto ? 'auto' : null
+    }
+  }
+  return { byMode, sources }
+}
+
 
 /** Every value a binding may ask for, for this instance. */
 export const valuesFor = ({ instance, settings, seed }) => {
@@ -224,7 +222,7 @@ const genKeyFor = ({ instance, workflow, values }) =>
 
 const findReusable = ({ genKey, instanceId }) => {
   const rows = db
-    .prepare("SELECT id, output_path, seed, duration_ms, probe_json, checks_json FROM instances WHERE gen_key = ? AND status = 'done' AND output_path IS NOT NULL AND id != ? ORDER BY id DESC")
+    .prepare("SELECT id, output_path, seed, duration_ms, probe_json, checks_json, output_thumb FROM instances WHERE gen_key = ? AND status = 'done' AND output_path IS NOT NULL AND id != ? ORDER BY id DESC")
     .all(genKey, instanceId)
   return rows.find((r) => fs.existsSync(path.join(config.OUTPUTS_DIR, r.output_path))) || null
 }
@@ -258,6 +256,18 @@ export const prepareGraph = async ({ client, instance, workflow, settings, seed 
   return { graph, values }
 }
 
+// ComfyUI keeps its own copy of every clip in its output folder (same disk on the worker);
+// once we hold the file, ours is removed there. Only files with our prefix are touched.
+const removeComfyCopy = ({ filename, subfolder = '' }) => {
+  if (!config.COMFY_OUTPUT_DIR || !/^vc_/.test(filename)) return
+  const target = path.join(config.COMFY_OUTPUT_DIR, subfolder, filename)
+  try {
+    fs.unlinkSync(target)
+  } catch {
+    // not on this machine or already gone
+  }
+}
+
 const generateInstance = async ({ client, instance, workflow, settings, seed }) => {
   const { graph } = await prepareGraph({ client, instance, workflow, settings, seed })
   const promptId = await client.queuePrompt(graph)
@@ -269,6 +279,7 @@ const generateInstance = async ({ client, instance, workflow, settings, seed }) 
   const ext = path.extname(output.filename) || '.mp4'
   const outName = `${instance.id}_${sha1(promptId).slice(0, 8)}${ext}`
   await client.downloadToFile({ ...output, destPath: path.join(config.OUTPUTS_DIR, outName) })
+  removeComfyCopy(output)
   const probe = await probeVideo({ filePath: path.join(config.OUTPUTS_DIR, outName), meta: output })
   return { outName, probe, checks: runChecks({ probe, instance }) }
 }
@@ -280,48 +291,69 @@ const generateInstance = async ({ client, instance, workflow, settings, seed }) 
 export const runPending = async ({ runId, onProgress = () => {} }) => {
   if (activeRuns.has(runId)) throw new Error(`Run ${runId} is already in progress`)
   activeRuns.add(runId)
+  // remembered across restarts: a run that was active when the server died is resumed on boot
+  db.prepare('UPDATE runs SET wanted_active = 1, last_stop = NULL WHERE id = ?').run(runId)
   try {
     const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
     if (!run) throw new Error(`Run ${runId} not found`)
-    if (!run.workflow_id) throw new Error('No workflow selected for this run')
-    const workflow = loadWorkflow(run.workflow_id)
+    const { byMode } = resolveWorkflows(run)
+    const used = [...new Set(Object.values(byMode).filter(Boolean))]
+    if (!used.length) throw new Error('No workflow uploaded')
     const settings = settingsOf(run)
-    const caps = capabilities(workflow.bindings)
 
     const client = new ComfyClient({ baseUrl: config.COMFY_URL, timeoutMs: config.JOB_TIMEOUT_MS, pollIntervalMs: config.POLL_INTERVAL_MS })
     if (!(await client.ping())) throw new Error(`ComfyUI is not reachable at ${config.COMFY_URL}`)
-    const missing = missingClasses({ graph: workflow.graph, objectInfo: await client.getObjectInfo({ force: true }) })
-    if (missing.length) throw new Error(`ComfyUI is missing node classes used by the workflow: ${missing.join(', ')}`)
+    const objectInfo = await client.getObjectInfo({ force: true })
+    for (const w of used) {
+      const missing = missingClasses({ graph: w.graph, objectInfo })
+      if (missing.length) throw new Error(`ComfyUI is missing node classes used by workflow "${w.name}": ${missing.join(', ')}`)
+    }
 
     const pending = db
       .prepare("SELECT * FROM instances WHERE run_id = ? AND sampled = 1 AND status IN ('pending', 'failed', 'running', 'unsupported') ORDER BY id")
       .all(runId)
 
-    // mark what this workflow cannot replay, so the loop and the UI skip it
+    // pick a workflow per row; mark what no workflow can replay so the loop and the UI skip it
     const setUnsupported = db.prepare("UPDATE instances SET status = 'unsupported', error = ?, workflow_id = ? WHERE id = ?")
     const setPending = db.prepare("UPDATE instances SET status = 'pending', error = NULL WHERE id = ?")
     const runnable = []
     for (const instance of pending) {
-      const reason = unsupportedReason({ caps, instance })
-      if (reason) setUnsupported.run(reason, workflow.id, instance.id)
+      const workflow = byMode[instance.mode]
+      const reason = workflow ? unsupportedReason({ caps: workflow.caps, instance }) : `no uploaded workflow supports mode ${instance.mode}`
+      if (reason) setUnsupported.run(reason, workflow?.id || null, instance.id)
       else {
         if (instance.status === 'unsupported') setPending.run(instance.id)
-        runnable.push(instance)
+        runnable.push({ ...instance, workflow })
       }
     }
 
+    stopReasons.delete(runId)
+    const lowBeforePrefetch = await lowDiskReason()
+    if (lowBeforePrefetch) {
+      stopReasons.set(runId, lowBeforePrefetch)
+      throw new Error(lowBeforePrefetch)
+    }
     const prefetch = await prefetchAssets(runnable, { onProgress: (p) => onProgress({ phase: 'prefetch', ...p }) })
     console.log(`[run ${runId}] prefetched ${prefetch.total - prefetch.failed}/${prefetch.total} assets${prefetch.failed ? ` (${prefetch.failed} failed, retried per instance)` : ''}`)
 
     await client.connect()
-    const setStatus = db.prepare('UPDATE instances SET status = ?, error = ?, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, workflow_id = ?, attempt = ? WHERE id = ?')
+    const setStatus = db.prepare("UPDATE instances SET status = ?, error = ?, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, workflow_id = ?, attempt = ?, finished_at = CASE WHEN ? = 'done' THEN datetime('now') ELSE finished_at END WHERE id = ?")
     let done = 0
     let failed = 0
     let reused = 0
     let stopped = false
+    let consecutiveFailures = 0
     try {
       for (const instance of runnable) {
+        const { workflow } = instance
         if (stopRequests.has(runId)) {
+          stopped = true
+          break
+        }
+        const lowDisk = await lowDiskReason()
+        if (lowDisk) {
+          console.error(`[run ${runId}] pausing: ${lowDisk}`)
+          stopReasons.set(runId, lowDisk)
           stopped = true
           break
         }
@@ -336,8 +368,8 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
         db.prepare('UPDATE instances SET gen_key = ? WHERE id = ?').run(genKey, instance.id)
         const reusable = findReusable({ genKey, instanceId: instance.id })
         if (reusable) {
-          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ? WHERE id = ?")
-            .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, instance.id)
+          db.prepare("UPDATE instances SET status = 'done', error = NULL, output_path = ?, duration_ms = ?, probe_json = ?, checks_json = ?, reused = 1, workflow_id = ?, output_thumb = ?, finished_at = datetime('now') WHERE id = ?")
+            .run(reusable.output_path, reusable.duration_ms, reusable.probe_json, reusable.checks_json, workflow.id, reusable.output_thumb, instance.id)
           done += 1
           reused += 1
           onProgress({ phase: 'generate', instanceId: instance.id, status: 'done' })
@@ -351,9 +383,11 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
           try {
             await client.connect()
             const result = await generateInstance({ client, instance, workflow, settings, seed })
-            setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, instance.id)
+            setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, 'done', instance.id)
             done += 1
             lastError = null
+            consecutiveFailures = 0
+            await emit('generation:finished', { instance, outputPath: path.join(config.OUTPUTS_DIR, result.outName) })
             break
           } catch (err) {
             lastError = err
@@ -362,14 +396,29 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
           }
         }
         progress.delete(instance.id)
+        // an environment problem (node pack gone, ComfyUI down) would fail every remaining row the same way:
+        // pause the run instead; the watchdog retries every 5 min and the start check reports the cause
+        const environmental = lastError && /missing_node_type|not reachable|failed after \d+ attempts|ECONNREFUSED/i.test(String(lastError.message))
+        consecutiveFailures = lastError && !/Failed to download/.test(String(lastError.message)) ? consecutiveFailures + 1 : 0
+        if (lastError && (environmental || consecutiveFailures >= 5)) {
+          const reason = environmental
+            ? `paused: ComfyUI problem — ${String(lastError.message).slice(0, 300)}`
+            : `paused: ${consecutiveFailures} generations in a row failed — last error: ${String(lastError.message).slice(0, 300)}`
+          console.error(`[run ${runId}] ${reason}`)
+          stopReasons.set(runId, reason)
+          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, 'pending', instance.id)
+          onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
+          stopped = true
+          break
+        }
         if (lastError && stopRequests.has(runId)) {
-          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, instance.id)
+          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, 'pending', instance.id)
           onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
           stopped = true
           break
         }
         if (lastError) {
-          setStatus.run('failed', String(lastError.message || lastError), null, Date.now() - startedAt, null, null, workflow.id, attempt, instance.id)
+          setStatus.run('failed', String(lastError.message || lastError), null, Date.now() - startedAt, null, null, workflow.id, attempt, 'failed', instance.id)
           failed += 1
         }
         onProgress({ phase: 'generate', instanceId: instance.id, status: lastError ? 'failed' : 'done' })
@@ -377,7 +426,20 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     } finally {
       client.close()
     }
-    return { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped }
+    const summary = { runId, processed: runnable.length, unsupported: pending.length - runnable.length, done, failed, reused, stopped, workflows: used.map((w) => w.name) }
+    const reason = stopReasons.get(runId)
+    if (reason) {
+      // paused by a guard (e.g. low disk): stay "wanted", the watchdog resumes it once the cause clears
+      db.prepare('UPDATE runs SET last_stop = ? WHERE id = ?').run(`${reason} (at ${new Date().toISOString()})`, runId)
+    } else if (!stopped) {
+      db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'finished at ' || datetime('now') || ' UTC' WHERE id = ?").run(runId)
+    }
+    await emit('run:finished', { runId, summary })
+    return summary
+  } catch (err) {
+    // unexpected error: keep the run wanted so the watchdog retries; the reason is visible in the UI
+    db.prepare('UPDATE runs SET last_stop = ? WHERE id = ?').run(`error: ${err.message} (at ${new Date().toISOString()})`, runId)
+    throw err
   } finally {
     activeRuns.delete(runId)
     stopRequests.delete(runId)
@@ -385,3 +447,50 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
 }
 
 export const interruptComfy = () => new ComfyClient({ baseUrl: config.COMFY_URL }).interrupt()
+
+const pendingCount = db.prepare("SELECT COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 AND status IN ('pending', 'failed', 'running')")
+
+/**
+ * Starts every run that should be active but is not: after a restart, after a guard pause,
+ * or after an error. Only an explicit Stop (wanted_active = 0) or no pending rows ends it.
+ */
+export const resumeWantedRuns = ({ delayMs = 5000, label = 'resume' } = {}) => {
+  const runs = db.prepare('SELECT id, name FROM runs WHERE wanted_active = 1').all().filter((r) => !activeRuns.has(r.id))
+  for (const run of runs) {
+    if (!pendingCount.get(run.id).c) {
+      db.prepare("UPDATE runs SET wanted_active = 0, last_stop = 'finished at ' || datetime('now') || ' UTC' WHERE id = ?").run(run.id)
+      continue
+    }
+    console.log(`[${label}] run ${run.id} "${run.name}" should be running — starting in ${delayMs / 1000}s`)
+    setTimeout(() => {
+      runPending({ runId: run.id }).then(
+        (r) => console.log(`[run ${run.id}] finished: ${JSON.stringify(r)}`),
+        (err) => console.error(`[run ${run.id}] ${label} failed: ${err.message}`)
+      )
+    }, delayMs)
+  }
+  return runs.length
+}
+
+/** Boot: resume immediately; then keep checking every `intervalMs`. */
+export const startWatchdog = ({ intervalMs = 5 * 60 * 1000 } = {}) => {
+  resumeWantedRuns({ label: 'resume' })
+  setInterval(() => resumeWantedRuns({ delayMs: 1000, label: 'watchdog' }), intervalMs)
+}
+
+/** Rows generated before finished_at existed get the output file's modification time. */
+export const backfillFinishedAt = () => {
+  const rows = db.prepare("SELECT id, output_path FROM instances WHERE status = 'done' AND finished_at IS NULL AND output_path IS NOT NULL").all()
+  const set = db.prepare('UPDATE instances SET finished_at = ? WHERE id = ?')
+  let n = 0
+  for (const row of rows) {
+    try {
+      const mtime = fs.statSync(path.join(config.OUTPUTS_DIR, row.output_path)).mtime
+      set.run(mtime.toISOString().replace('T', ' ').slice(0, 19), row.id)
+      n += 1
+    } catch {
+      // file gone; leave null
+    }
+  }
+  return n
+}

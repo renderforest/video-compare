@@ -81,11 +81,43 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_instances_run ON instances (run_id, sampled, status);
   CREATE INDEX IF NOT EXISTS idx_instances_scenario ON instances (run_id, scenario_key);
   CREATE INDEX IF NOT EXISTS idx_instances_gen_key ON instances (gen_key);
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_instance ON comments (instance_id, id);
+
+  CREATE TABLE IF NOT EXISTS favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    user TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (instance_id, user)
+  );
+  CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites (user, id);
+
+  CREATE TABLE IF NOT EXISTS users (
+    name TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `)
 
 // additive migrations for DBs created before a column existed
 for (const [table, column] of [
-  ['instances', 'note TEXT']
+  ['instances', 'note TEXT'],
+  ['workflows', 'detector_version INTEGER NOT NULL DEFAULT 1'],
+  ['instances', 'output_thumb TEXT'],
+  ['instances', 'prod_thumb TEXT'],
+  ['runs', 'wanted_active INTEGER NOT NULL DEFAULT 0'],
+  ['runs', 'last_stop TEXT'],
+  ['instances', 'rated_by TEXT'],
+  ["comments", "side TEXT NOT NULL DEFAULT 'local' CHECK (side IN ('prod', 'local'))"],
+  ['instances', 'finished_at TEXT']
 ]) {
   try {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`)
@@ -95,3 +127,5 @@ for (const [table, column] of [
 }
 
 export default db
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_instances_finished ON instances (run_id, finished_at)')

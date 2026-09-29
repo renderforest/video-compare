@@ -68,7 +68,9 @@
   .inputs small { color: var(--muted); }
   .controls { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
   .controls button { font-size: 12px; padding: 4px 9px; }
-  .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .rate button.sel { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,110,246,.25); font-weight: 600; }
+  .rate button.sel::before { content: '✓ '; }
+  .star.sel { color: #c98a1b; border-color: #c98a1b; font-weight: 600; }
   .note { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 8px; }
   .copy { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; }
   .dd { position: relative; }
@@ -85,7 +87,34 @@
   dialog.text { padding: 16px; width: min(900px, 92vw); }
   dialog.text pre { max-height: 70vh; overflow: auto; font-size: 12px; }
   dialog::backdrop { background: rgba(0,0,0,.6); }
+  .mini { padding: 0 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--muted); vertical-align: middle; cursor: pointer; }
+  .mini:hover { color: var(--accent); border-color: var(--accent); }
+  #cmp { position: fixed; inset: 0; z-index: 50; background: #000; color: #eee; display: flex; flex-direction: column; }
+  #cmp[hidden] { display: none; }
+  .cmp-vids { flex: 1; display: flex; gap: 4px; min-height: 0; padding: 4px; }
+  .cmp-vids.stacked { flex-direction: column; }
+  .cmp-vids figure { flex: 1; margin: 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .cmp-vids figcaption { font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: .04em; padding: 2px 6px; }
+  .cmp-vids video { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .cmp-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #111; border-top: 1px solid #222; flex-wrap: wrap; }
+  .cmp-bar button { background: #222; color: #eee; border-color: #333; }
+  .cmp-bar input[type=range] { flex: 1; min-width: 160px; }
+  .cmp-bar label { color: #aaa; }
+  .cmp-meta { color: #888; font-size: 12px; }
   .empty { color: var(--muted); padding: 60px 0; text-align: center; }
+  .comments { margin-top: 6px; padding-top: 4px; }
+  .comments summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .comment { display: flex; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .avatar { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; flex: none; font-weight: 600; }
+  .comment .body { flex: 1; min-width: 0; }
+  .comment .who { font-size: 11px; color: var(--muted); }
+  .comment .who b { color: var(--text); }
+  .comment .text { white-space: pre-wrap; word-break: break-word; }
+  .comment .del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
+  .comment .del:hover { color: var(--err); }
+  .cform { display: flex; gap: 6px; margin-top: 6px; }
+  .cform textarea { flex: 1; min-height: 34px; font-size: 13px; padding: 4px 8px; resize: vertical; }
+  .cform button { align-self: flex-end; }
   code { background: #eef1f6; padding: 1px 4px; border-radius: 3px; }
 </style>
 </head>
@@ -98,12 +127,14 @@
   </div>
   <span class="stats" id="stats"></span>
   <span class="health" id="health">checking ComfyUI…</span>
+  <button id="whoBtn" title="Your name is attached to your ratings and comments">You: —</button>
 </header>
 <main>
   <section class="setup">
     <div class="card">
-      <h2>Workflow (candidate)</h2>
+      <h2>Workflows (candidate)</h2>
       <div class="row">
+        <label>default</label>
         <select id="wfSelect"></select>
         <button id="wfUploadBtn" title="Upload a ComfyUI API-format export">Upload</button>
         <button id="wfInfoBtn" title="Detected bindings and node check">Details</button>
@@ -111,7 +142,8 @@
         <input type="file" id="wfFile" accept=".json" hidden>
       </div>
       <div class="caps" id="wfCaps"></div>
-      <div class="hint">Export from ComfyUI with <b>Save (API Format)</b>. Prompt, seed, duration, aspect ratio, megapixels and image slots are detected automatically from the graph (or use <code>%%PROMPT%%</code>-style placeholders). Check <b>Details</b> before starting.</div>
+      <table class="cov" id="wfModes"></table>
+      <div class="hint">One upload per graph (e.g. reference-image graph, first/last-frame graph). Each mode uses the workflow chosen in its row; <b>auto</b> = the default when it supports the mode, else the newest upload that does. Export from ComfyUI with <b>Save (API Format)</b>; prompt, seed, duration, aspect, megapixels and image slots are detected from the graph.</div>
     </div>
 
     <div class="card">
@@ -130,6 +162,7 @@
       <button class="danger" id="stopBtn" style="width:100%; margin-top:8px" hidden>Stop generation</button>
       <div class="row" style="margin-top:8px">
         <button id="resetFailedBtn">Retry failed / unsupported</button>
+        <button id="thumbsBtn" title="Make posters for clips that have none yet">Thumbnails</button>
         <a id="exportBtn" href="#"><button>Export CSV</button></a>
         <a id="summaryBtn" href="#"><button>Summary CSV</button></a>
       </div>
@@ -154,7 +187,7 @@
   </section>
 
   <div class="card" id="coverageCard" hidden>
-    <details open>
+    <details>
       <summary>Coverage by scenario (<span id="covCount"></span>) — click a row to filter</summary>
       <div class="covwrap">
         <table class="cov" id="covTable"></table>
@@ -167,32 +200,125 @@
     <select data-f="quality"><option value="">quality</option></select>
     <select data-f="aspect"><option value="">aspect</option></select>
     <select data-f="duration_bucket"><option value="">duration</option></select>
-    <select data-f="style"><option value="">style</option></select>
+    <select data-f="video_type"><option value="">video type (picker card)</option></select>
+    <select data-f="image_style"><option value="">image style</option></select>
     <select data-f="status"><option value="">status</option></select>
     <select data-f="rating"><option value="">rating</option><option value="unrated">unrated</option><option value="prod">prod</option><option value="local">local</option><option value="tie">tie</option></select>
+    <input type="search" id="searchBox" placeholder="prompt or project id" size="18">
+    <select data-f="rated_by"><option value="">rated by</option></select>
+    <select data-f="favorited_by"><option value="">favorited by</option></select>
+    <label><input type="checkbox" id="onlyFavorites"> ★ my favorites</label>
     <label><input type="checkbox" id="onlyProblems"> only failed checks</label>
+    <label><input type="checkbox" id="onlyCommented"> with comments</label>
     <button id="clearFilters">clear</button>
     <span class="hint" id="filterCount" style="margin-top:0"></span>
+  </div>
+  <div class="filters" id="pager">
+    <button id="prevPage">‹ prev</button>
+    <span id="pageInfo" class="hint" style="margin-top:0"></span>
+    <button id="nextPage">next ›</button>
+    <label>per page <select id="pageSize"><option>12</option><option selected>24</option><option>48</option><option>96</option></select></label>
+    <label>order <select id="orderSel"><option value="generated" selected>generated ↑ (oldest first, new at the end)</option><option value="newest">generated ↓ (newest first)</option><option value="scenario">scenario, then id</option></select></label>
+    <span class="hint" style="margin-top:0">keys: ← → pages · videos load only while on screen</span>
   </div>
 
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden>No runs yet — upload a production CSV above, or run <code>npm run import -- &lt;csv&gt;</code>.</div>
 </main>
 <dialog id="zoom"><img id="zoomImg" alt=""></dialog>
+<div id="cmp" hidden>
+  <div class="cmp-vids"><figure><figcaption>Production</figcaption><video id="cmpProd" playsinline loop></video></figure><figure><figcaption>Local (new workflow)</figcaption><video id="cmpLocal" playsinline loop></video></figure></div>
+  <div class="cmp-bar">
+    <button id="cmpPlay">▶</button>
+    <button id="cmpRestart" title="restart both">↺</button>
+    <button id="cmpStep" title="step one frame (.)">›</button>
+    <input type="range" id="cmpSeek" min="0" max="1000" value="0" step="1">
+    <span id="cmpTime">0:00 / 0:00</span>
+    <label><input type="checkbox" id="cmpMute"> mute</label>
+    <label><input type="checkbox" id="cmpSwap"> swap sides</label>
+    <span class="cmp-meta" id="cmpMeta"></span>
+    <button id="cmpClose" title="close (Esc)">✕</button>
+  </div>
+</div>
 <dialog id="textDlg" class="text"><div id="textDlgBody"></div></dialog>
+<dialog id="userDlg" class="text" style="width:min(520px,92vw)">
+  <h3 style="margin:0 0 4px">Who are you?</h3>
+  <p class="hint" style="margin:0 0 10px">Your name is attached to your ratings, comments and favorites on this computer.</p>
+  <div id="userList" class="caps" style="gap:6px;margin-bottom:12px"></div>
+  <div class="row" style="margin:0">
+    <input type="text" id="newUserName" placeholder="new user name" style="flex:1" autocomplete="off">
+    <button class="primary" id="newUserBtn">Add & continue</button>
+  </div>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id)
 let currentRunId = null
 let pollTimer = null
 let workflows = []
-let instances = []
+let instances = []            // rows of the current page only
 let coverageRows = []
+let coverageLoadedAt = 0
 let scenarioFilter = null
-const filters = {}
+// default view: finished, not yet rated — the rows a reviewer has to act on
+const DEFAULT_FILTERS = { status: 'done', rating: 'unrated' }
+let filters = { ...DEFAULT_FILTERS }
+let page = 1
+let pageInfo = { total: 0, pages: 1 }
+// rows rated in this session stay on the page (with their selection visible) until you navigate,
+// even though the default "unrated" filter no longer matches them
+const pinned = new Map() // id → { row, index }
 const cardSig = new Map()
 
-const api = async (url, opts) => {
+// ---- who is rating / commenting: a display name kept in this browser ----
+const USER_KEY = 'vc_user'
+let userName = ''
+try { userName = localStorage.getItem(USER_KEY) || '' } catch { userName = '' }
+let userResolve = null
+const setUser = (name) => {
+  userName = String(name || '').trim().slice(0, 60)
+  try { if (userName) localStorage.setItem(USER_KEY, userName) } catch {}
+  renderWho()
+  cardSig.clear(); if (currentRunId) refresh(false)
+  if (userResolve) { userResolve(userName); userResolve = null }
+}
+async function openUserDialog () {
+  let users = []
+  try { users = await api('/api/users') } catch { users = [] }
+  $('userList').innerHTML = users.length
+    ? users.map((u) => `<button class="${u.name === userName ? 'primary' : ''}" data-user="${esc(u.name)}" title="last active ${esc(fmtTime(u.last_seen))}">${avatar(u.name)} ${esc(u.name)}</button>`).join('')
+    : '<span class="hint">no users yet — add yourself below</span>'
+  $('userList').querySelectorAll('button[data-user]').forEach((b) => { b.style.display = 'inline-flex'; b.style.alignItems = 'center'; b.style.gap = '6px'; b.onclick = async () => { await post('/api/users', { name: b.dataset.user }).catch(() => {}); $('userDlg').close(); setUser(b.dataset.user) } })
+  $('newUserName').value = ''
+  $('userDlg').showModal()
+  setTimeout(() => $('newUserName').focus(), 50)
+}
+$('newUserBtn').onclick = async () => {
+  const name = $('newUserName').value.trim()
+  if (!name) return $('newUserName').focus()
+  try { await post('/api/users', { name }) } catch (err) { return alert(err.message) }
+  $('userDlg').close(); setUser(name)
+}
+$('newUserName').onkeydown = (e) => { if (e.key === 'Enter') $('newUserBtn').click() }
+// no name yet: the dialog stays until a user is chosen (Escape reopens it)
+$('userDlg').addEventListener('cancel', (e) => { if (!userName) { e.preventDefault() } })
+// returns the current name, opening the picker first if none is set
+const askName = (force = false) => {
+  if (userName && !force) return userName
+  openUserDialog()
+  return userName
+}
+const ensureUser = () => (userName ? Promise.resolve(userName) : new Promise((resolve) => { userResolve = resolve; openUserDialog() }))
+function renderWho () { $('whoBtn').textContent = userName ? `You: ${userName}` : 'Set your name' }
+$('whoBtn').onclick = () => openUserDialog()
+renderWho()
+if (!userName) ensureUser()
+const avatarColor = (name) => { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 55% 45%)` }
+const avatar = (name) => `<span class="avatar" style="background:${avatarColor(name)}" title="${esc(name)}">${esc(name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase())}</span>`
+const fmtTime = (iso) => (iso || '').replace('T', ' ').slice(0, 16)
+
+const api = async (url, opts = {}) => {
+  opts.headers = { ...(opts.headers || {}), ...(userName ? { 'x-user': userName } : {}) }
   const res = await fetch(url, opts)
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(json.error || res.statusText)
@@ -208,8 +334,10 @@ const styleOf = (i) => (i.video_type_name || i.video_type ? `${i.video_type_name
 async function health () {
   try {
     const h = await api('/api/health')
-    $('health').className = `health ${h.comfyReachable ? 'ok' : 'bad'}`
-    $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}`
+    const diskLow = h.disk && h.disk.freeGb != null && h.disk.freeGb < h.disk.minFreeGb
+    $('health').className = `health ${h.comfyReachable && !diskLow ? 'ok' : 'bad'}`
+    $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}` +
+      (h.disk && h.disk.freeGb != null ? ` · disk ${h.disk.freeGb} GB free${diskLow ? ` (below ${h.disk.minFreeGb} GB — generation paused)` : ''}` : '')
     if (!$('mp480').value) { $('mp480').value = h.defaults.qualityMegapixels[480]; $('mp720').value = h.defaults.qualityMegapixels[720] }
   } catch {
     $('health').className = 'health bad'
@@ -236,7 +364,10 @@ async function loadRuns (selectRunId) {
       <button class="dd-del" data-del="${r.id}" title="Delete this run and its videos">🗑</button>
     </div>`).join('')
   cardSig.clear()
+  pinned.clear()
   scenarioFilter = null
+  filters = { ...DEFAULT_FILTERS }
+  page = 1
   await refresh(true)
 }
 $('runBtn').onclick = (e) => { e.stopPropagation(); $('runList').hidden = !$('runList').hidden }
@@ -257,6 +388,8 @@ $('runList').onclick = async (e) => {
 }
 
 // ---- workflows ----
+const MODE_LABELS = { t2v: 'text → video', i2v: 'first frame → video', flf: 'first + last frame', ia2v: 'first frame + voice-over', refi2v: 'reference images / audios' }
+let modePlan = {}
 async function loadWorkflows (run) {
   workflows = await api('/api/workflows')
   const sel = $('wfSelect')
@@ -264,6 +397,34 @@ async function loadWorkflows (run) {
   sel.innerHTML = workflows.length ? workflows.map((w) => `<option value="${w.id}">${esc(w.name)} (#${w.id})</option>`).join('') : '<option value="">— upload a workflow —</option>'
   if (selected && workflows.some((w) => w.id === selected)) sel.value = selected
   renderCaps()
+  await renderModeTable(run)
+}
+async function renderModeTable (run) {
+  modePlan = currentRunId ? await api(`/api/runs/${currentRunId}/workflows`).catch(() => ({})) : {}
+  const chosen = (run && run.settings && run.settings.workflowsByMode) || {}
+  $('wfModes').innerHTML = '<tr><th>mode</th><th>workflow</th><th>will use</th></tr>' + Object.entries(MODE_LABELS).map(([mode, label]) => {
+    const plan = modePlan[mode]
+    const options = '<option value="">auto</option>' + workflows.map((w) => `<option value="${w.id}" ${Number(chosen[mode]) === w.id ? 'selected' : ''} ${w.capabilities.modes[mode] ? '' : 'disabled'}>${esc(w.name)}${w.capabilities.modes[mode] ? '' : ' (cannot)'}</option>`).join('')
+    const badge = plan ? `<span class="badge yes">${esc(plan.name)} <small>(${plan.source})</small></span>` : '<span class="badge no">none — rows skipped</span>'
+    return `<tr><td>${mode} <small style="color:var(--muted)">${label}</small></td><td><select data-mode="${mode}" style="padding:3px 6px">${options}</select> <button data-upload-mode="${mode}" style="padding:3px 8px" title="Upload a workflow and use it for ${label}">Upload</button></td><td>${badge}</td></tr>`
+  }).join('')
+  $('wfModes').querySelectorAll('button[data-upload-mode]').forEach((btn) => {
+    btn.onclick = () => { uploadForMode = btn.dataset.uploadMode; $('wfFile').click() }
+  })
+  $('wfModes').querySelectorAll('select[data-mode]').forEach((sel) => {
+    sel.onchange = async () => {
+      if (!currentRunId) return
+      const workflowsByMode = {}
+      $('wfModes').querySelectorAll('select[data-mode]').forEach((x) => { if (x.value) workflowsByMode[x.dataset.mode] = Number(x.value) })
+      await put(`/api/runs/${currentRunId}/settings`, { workflowsByMode }).catch((err) => alert(err.message))
+      await renderModeTable({ settings: { workflowsByMode } })
+    }
+  })
+}
+const workflowsByModeFromUi = () => {
+  const out = {}
+  $('wfModes').querySelectorAll('select[data-mode]').forEach((x) => { if (x.value) out[x.dataset.mode] = Number(x.value) })
+  return out
 }
 function renderCaps () {
   const w = workflows.find((x) => x.id === Number($('wfSelect').value))
@@ -276,11 +437,17 @@ function renderCaps () {
 }
 $('wfSelect').onchange = async () => {
   renderCaps()
-  if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: Number($('wfSelect').value) || null }).catch(() => {})
+  if (currentRunId) {
+    await put(`/api/runs/${currentRunId}/settings`, { workflowId: Number($('wfSelect').value) || null }).catch(() => {})
+    await renderModeTable({ settings: { workflowsByMode: workflowsByModeFromUi() } })
+  }
 }
-$('wfUploadBtn').onclick = () => $('wfFile').click()
+let uploadForMode = null // set when the Upload button of a mode row was used
+$('wfUploadBtn').onclick = () => { uploadForMode = null; $('wfFile').click() }
 $('wfFile').onchange = async () => {
   const file = $('wfFile').files[0]
+  const targetMode = uploadForMode
+  uploadForMode = null
   if (!file) return
   const suggested = file.name.replace(/\.json$/i, '')
   const name = prompt('Name for this workflow:', suggested)
@@ -289,9 +456,20 @@ $('wfFile').onchange = async () => {
   form.append('workflow', file); form.append('name', name || suggested)
   try {
     const res = await api('/api/workflows', { method: 'POST', body: form })
-    await loadWorkflows(); $('wfSelect').value = res.id; renderCaps()
-    if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
     const lines = [`Uploaded "${res.name}" ✓`]
+    if (targetMode) {
+      // assign to that mode only; the default workflow stays as it is
+      if (!res.capabilities.modes[targetMode]) lines.push(`⚠ this graph has no inputs for mode ${targetMode} (${MODE_LABELS[targetMode]}) — check Details → bindings`)
+      else if (currentRunId) {
+        const workflowsByMode = { ...workflowsByModeFromUi(), [targetMode]: res.id }
+        await put(`/api/runs/${currentRunId}/settings`, { workflowsByMode }).catch(() => {})
+      }
+      await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null))
+    } else {
+      await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)); $('wfSelect').value = res.id; renderCaps()
+      if (currentRunId) await put(`/api/runs/${currentRunId}/settings`, { workflowId: res.id }).catch(() => {})
+      await renderModeTable(await api(`/api/runs/${currentRunId}`).catch(() => null))
+    }
     if (res.missingClasses && res.missingClasses.length) lines.push(`⚠ ComfyUI lacks node classes: ${res.missingClasses.join(', ')}`)
     lines.push(...res.notes.map((n) => `⚠ ${n}`))
     alert(lines.join('\n'))
@@ -303,7 +481,7 @@ $('wfDeleteBtn').onclick = async () => {
   const id = Number($('wfSelect').value)
   if (!id) return
   if (!confirm('Delete this workflow?')) return
-  try { await api(`/api/workflows/${id}`, { method: 'DELETE' }); $('wfSelect').value = ''; await loadWorkflows() } catch (err) { alert(err.message) }
+  try { await api(`/api/workflows/${id}`, { method: 'DELETE' }); $('wfSelect').value = ''; await loadWorkflows(await api(`/api/runs/${currentRunId}`).catch(() => null)) } catch (err) { alert(err.message) }
 }
 $('wfInfoBtn').onclick = () => { const id = Number($('wfSelect').value); if (id) showWorkflowDetails(id) }
 
@@ -334,12 +512,24 @@ async function showWorkflowDetails (id) {
 }
 
 // ---- refresh ----
+const instanceQuery = () => {
+  const q = new URLSearchParams({ page, pageSize: $('pageSize').value, order: $('orderSel').value })
+  for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v)
+  if (scenarioFilter) q.set('scenario', scenarioFilter)
+  if ($('onlyProblems').checked) q.set('problems', '1')
+  if ($('onlyCommented').checked) q.set('commented', '1')
+  if ($('onlyFavorites').checked && userName) q.set('favorited_by', userName)
+  if ($('searchBox').value.trim()) q.set('q', $('searchBox').value.trim())
+  return q.toString()
+}
+
 async function refresh (full = false) {
   if (currentRunId == null) return
-  const [run, rows, cov] = await Promise.all([
+  const coverageStale = full || Date.now() - coverageLoadedAt > 30000
+  const [run, pageData, cov] = await Promise.all([
     api(`/api/runs/${currentRunId}`),
-    api(`/api/runs/${currentRunId}/instances`),
-    api(`/api/runs/${currentRunId}/coverage`)
+    api(`/api/runs/${currentRunId}/instances?${instanceQuery()}`),
+    coverageStale ? api(`/api/runs/${currentRunId}/coverage`) : null
   ])
   if (full || !workflows.length) {
     await loadWorkflows(run)
@@ -348,15 +538,22 @@ async function refresh (full = false) {
       $('mp720').value = run.settings.qualityMegapixels[720] ?? $('mp720').value
     }
     $('perCell').value = run.per_cell || 5
+    await loadFilterValues()
   }
-  instances = rows
-  coverageRows = cov
+  instances = pageData.rows
+  for (const [id, { row, index }] of pinned) {
+    if (!instances.some((r) => r.id === id)) instances.splice(Math.min(index, instances.length), 0, row)
+  }
+  pageInfo = pageData
+  if (cov) {
+    coverageRows = cov
+    coverageLoadedAt = Date.now()
+    renderCoverage()
+  }
   renderStats(run)
-  renderCoverage()
-  renderFilters()
   renderGrid()
   clearTimeout(pollTimer)
-  if (run.active || (run.running || 0) > 0) pollTimer = setTimeout(() => refresh(false), 3000)
+  if (run.active || (run.running || 0) > 0) pollTimer = setTimeout(() => refresh(false), 5000)
   $('startBtn').disabled = !!run.active
   $('startBtn').textContent = run.active ? 'Running…' : 'Start generation'
   $('stopBtn').hidden = !run.active
@@ -371,13 +568,14 @@ function renderStats (run) {
     ` &nbsp;|&nbsp; ratings: prod <b>${run.rated_prod || 0}</b> / local <b>${run.rated_local || 0}</b> / tie <b>${run.rated_tie || 0}</b>` +
     ` &nbsp;|&nbsp; ${run.sampled_cells}/${run.cells} cells · pool ${run.pool}`
   $('genSummary').textContent = run.active ? `Generating… ${run.done || 0}/${run.total}` : pending + (run.failed || 0) ? `${pending + (run.failed || 0)} left to generate` : run.total ? 'All done' : 'Nothing sampled'
-  $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow`
+  $('genDetail').textContent = `${run.done || 0} done · ${run.failed || 0} failed · ${run.unsupported || 0} unsupported by the workflow` +
+    (run.stop_reason && !run.active ? ` · ${/^finished/.test(run.stop_reason) ? '' : '⚠ '}${run.stop_reason}` : '')
 }
 
 function renderCoverage () {
   $('coverageCard').hidden = !coverageRows.length
   $('covCount').textContent = `${coverageRows.length} cells, ${coverageRows.filter((c) => !c.sampled).length} empty`
-  const head = '<tr><th>mode</th><th>quality</th><th>aspect</th><th>duration</th><th>video type</th><th>style</th><th>pool</th><th>sampled</th><th>done</th><th>failed</th><th>unsupp.</th><th>rated</th><th>local wins</th><th>prod wins</th><th>ties</th></tr>'
+  const head = '<tr><th>mode</th><th>quality</th><th>aspect</th><th>duration</th><th>video type (picker card)</th><th>image style</th><th>pool</th><th>sampled</th><th>done</th><th>failed</th><th>unsupp.</th><th>rated</th><th>local wins</th><th>prod wins</th><th>ties</th></tr>'
   $('covTable').innerHTML = head + coverageRows.map((c) => `<tr data-key="${esc(c.scenario_key)}" class="${scenarioFilter === c.scenario_key ? 'sel' : ''}">
     <td>${esc(c.mode)}</td><td>${c.quality}</td><td>${esc(c.aspect)}</td><td>${esc(c.duration_bucket)}</td><td>${esc(c.video_type || '-')}</td><td>${esc(c.style)}</td>
     <td class="num">${c.pool}</td><td class="num ${c.sampled ? '' : 'empty'}">${c.sampled || 0}</td><td class="num">${c.done || 0}</td><td class="num">${c.failed || 0}</td><td class="num">${c.unsupported || 0}</td>
@@ -387,50 +585,85 @@ $('covTable').onclick = (e) => {
   const tr = e.target.closest('tr[data-key]')
   if (!tr) return
   scenarioFilter = scenarioFilter === tr.dataset.key ? null : tr.dataset.key
-  renderCoverage(); renderGrid()
+  page = 1
+  renderCoverage(); refresh(false)
 }
 
-function renderFilters () {
-  const values = (f) => [...new Set(instances.map((i) => (f === 'style' ? styleOf(i) : i[f])).filter((v) => v != null))].sort()
+async function loadFilterValues () {
+  const values = await api(`/api/runs/${currentRunId}/filters`)
   for (const sel of document.querySelectorAll('#filters select[data-f]')) {
     const f = sel.dataset.f
-    if (f === 'rating') continue
-    const current = sel.value
-    sel.innerHTML = `<option value="">${f.replace('_', ' ')}</option>` + values(f).map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('')
-    sel.value = current
+    if (f === 'rating') { sel.value = filters.rating || ''; continue }
+    const list = f === 'rated_by' || f === 'favorited_by' ? (values.people || []) : (values[f] || [])
+    const opts = list.map((v) => (typeof v === 'object'
+      ? `<option value="${esc(v.value ?? v.v)}">${esc(v.label ?? v.v)}${v.count != null || v.c != null ? ` (${v.count ?? v.c})` : ''}</option>`
+      : `<option value="${esc(v)}">${esc(v)}</option>`)).join('')
+    const labels = { video_type: 'video type (picker card)', image_style: 'image style', duration_bucket: 'duration', rated_by: 'rated by', favorited_by: 'favorited by' }
+    sel.innerHTML = `<option value="">${labels[f] || f}</option>` + opts
+    sel.value = filters[f] || ''
   }
 }
-document.querySelectorAll('#filters select[data-f]').forEach((sel) => { sel.onchange = () => { filters[sel.dataset.f] = sel.value; renderGrid() } })
-$('onlyProblems').onchange = renderGrid
-$('clearFilters').onclick = () => { document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = ''; filters[s.dataset.f] = '' }); $('onlyProblems').checked = false; scenarioFilter = null; renderCoverage(); renderGrid() }
-
-function visibleInstances () {
-  return instances.filter((i) => {
-    if (scenarioFilter && i.scenario_key !== scenarioFilter) return false
-    for (const [f, v] of Object.entries(filters)) {
-      if (!v) continue
-      if (f === 'style') { if (styleOf(i) !== v) return false; continue }
-      if (f === 'rating') { if (v === 'unrated' ? i.rating : i.rating !== v) return false; continue }
-      if (String(i[f]) !== v) return false
-    }
-    if ($('onlyProblems').checked) {
-      const checks = i.checks_json ? JSON.parse(i.checks_json) : []
-      if (!checks.some((c) => !c.ok)) return false
-    }
-    return true
-  })
+const liftUnrated = () => {
+  if (filters.rating === 'unrated') { filters.rating = ''; document.querySelector('#filters select[data-f="rating"]').value = '' }
 }
+document.querySelectorAll('#filters select[data-f]').forEach((sel) => {
+  sel.onchange = () => {
+    filters[sel.dataset.f] = sel.value
+    if ((sel.dataset.f === 'rated_by' || sel.dataset.f === 'favorited_by') && sel.value) liftUnrated()
+    page = 1; pinned.clear(); refresh(false)
+  }
+})
+$('onlyProblems').onchange = () => { page = 1; refresh(false) }
+$('onlyCommented').onchange = () => { if ($('onlyCommented').checked) liftUnrated(); page = 1; pinned.clear(); refresh(false) }
+$('onlyFavorites').onchange = async () => { if ($('onlyFavorites').checked && !(await ensureUser())) { $('onlyFavorites').checked = false; return } if ($('onlyFavorites').checked) liftUnrated(); page = 1; pinned.clear(); refresh(false) }
+let searchTimer = null
+$('searchBox').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { page = 1; refresh(false) }, 400) }
+$('clearFilters').onclick = () => {
+  filters = {}
+  document.querySelectorAll('#filters select[data-f]').forEach((s) => { s.value = '' })
+  $('onlyProblems').checked = false; $('onlyCommented').checked = false; $('onlyFavorites').checked = false; $('searchBox').value = ''; scenarioFilter = null; page = 1; pinned.clear()
+  renderCoverage(); refresh(false)
+}
+$('prevPage').onclick = () => { if (page > 1) { page -= 1; pinned.clear(); refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('nextPage').onclick = () => { if (page < pageInfo.pages) { page += 1; pinned.clear(); refresh(false); window.scrollTo({ top: $('grid').offsetTop - 120 }) } }
+$('pageSize').onchange = () => { page = 1; pinned.clear(); refresh(false) }
+$('orderSel').onchange = () => { page = 1; pinned.clear(); refresh(false) }
+document.addEventListener('keydown', (e) => {
+  if (e.target.matches('input, textarea, select') || $('textDlg').open || !$('cmp').hidden) return
+  if (e.key === 'ArrowLeft') $('prevPage').click()
+  if (e.key === 'ArrowRight') $('nextPage').click()
+})
 
 function signature (i) {
-  return [i.status, i.rating, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
+  return [i.status, i.rating, i.rated_by, i.finished_at, i.is_favorite, i.favorited_by, i.comments_json, i.output_path, i.error, i.prod_video_path, i.checks_json, i.note, i.output_thumb, i.prod_thumb, i.prod_comment_count, i.local_comment_count, i.commenters, i.progress && `${i.progress.value}/${i.progress.max}`].join('|')
 }
 
+// Videos get their src only while near the viewport, and drop it again when scrolled away,
+// so a page of 24 cards never holds more than a few decoders in memory.
+const videoObserver = new IntersectionObserver((entries) => {
+  for (const { target, isIntersecting } of entries) {
+    if (isIntersecting) {
+      if (!target.src && target.dataset.src) target.src = target.dataset.src
+    } else if (target.src) {
+      target.pause()
+      target.removeAttribute('src')
+      target.load()
+    }
+  }
+}, { rootMargin: '400px 0px' })
+
 function renderGrid () {
-  const visible = visibleInstances()
-  $('filterCount').textContent = `${visible.length} of ${instances.length} sampled rows`
+  const visible = instances
+  const from = pageInfo.total ? (pageInfo.page - 1) * pageInfo.pageSize + 1 : 0
+  const to = from ? from + visible.length - 1 : 0
+  $('filterCount').textContent = `${pageInfo.total} rows match` + (filters.rating === 'unrated' ? ' · showing unrated only (rated rows are hidden — set rating to see them)' : '')
+  const filtered = Object.values(filters).some(Boolean) || scenarioFilter || $('onlyProblems').checked || $('onlyCommented').checked || $('onlyFavorites').checked || $('searchBox').value.trim()
+  $('pageInfo').textContent = pageInfo.total ? `${from}–${to} of ${pageInfo.total} · page ${pageInfo.page}/${pageInfo.pages}` : filtered ? 'no rows match these filters (default view is done + unrated — press clear to see everything)' : 'no rows'
+  $('prevPage').disabled = pageInfo.page <= 1
+  $('nextPage').disabled = pageInfo.page >= pageInfo.pages
   const grid = $('grid')
   const wanted = new Set(visible.map((i) => `card-${i.id}`))
-  for (const el of [...grid.children]) if (!wanted.has(el.id)) { el.remove(); cardSig.delete(el.id) }
+  for (const el of [...grid.children]) if (!wanted.has(el.id)) { el.querySelectorAll('video').forEach((v) => videoObserver.unobserve(v)); el.remove(); cardSig.delete(el.id) }
   let prev = null
   for (const i of visible) {
     const id = `card-${i.id}`
@@ -439,20 +672,36 @@ function renderGrid () {
     if (!el) {
       el = document.createElement('div'); el.className = 'card'; el.id = id
       el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+      el.querySelectorAll('video').forEach((v) => videoObserver.observe(v))
     } else if (cardSig.get(id) !== sig) {
       // re-render only what changed so a playing video is not interrupted
+      el.querySelectorAll('video').forEach((v) => videoObserver.unobserve(v))
       el.innerHTML = cardHtml(i); cardSig.set(id, sig)
+      el.querySelectorAll('video').forEach((v) => videoObserver.observe(v))
     }
     if (prev ? prev.nextSibling !== el : grid.firstChild !== el) grid.insertBefore(el, prev ? prev.nextSibling : grid.firstChild)
     prev = el
   }
 }
 
-function videoOrPlaceholder ({ src, fallback, label, note, side }) {
-  const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
-  return `<figure><figcaption><span>${label}</span>${src ? `<a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</figcaption>` +
-    (src ? `<video controls preload="metadata" loop playsinline data-side="${side}" src="${esc(src)}"${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) + '</figure>'
+function commentsBlock ({ id, side, count, list = [] }) {
+  return `<details class="comments" id="comments-${id}-${side}" open>
+      <summary>💬 ${count || 0} comment${count === 1 ? '' : 's'} on ${side === 'prod' ? 'production' : 'local'}</summary>
+      <div class="clist">${list.length ? list.map(commentHtml).join('') : '<div class="hint">no comments yet</div>'}</div>
+      <div class="cform"><textarea placeholder="Comment on the ${side === 'prod' ? 'production' : 'local'} clip…" onkeydown="if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') postComment(${id}, '${side}', this)"></textarea><button onclick="postComment(${id}, '${side}', this.previousElementSibling)">Post</button></div>
+    </details>`
 }
+
+function videoOrPlaceholder ({ src, fallback, label, note, side, poster, comments }) {
+  const onerror = fallback ? ` onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${esc(fallback)}'}"` : ''
+  // with a poster the browser needs nothing until play: no metadata fetch, no decoder
+  const preload = poster ? 'none' : 'metadata'
+  return `<figure><figcaption><span>${label}</span><span>${src ? `<button class="mini" onclick="fullscreenOne(this)" title="full screen">⛶</button> <a href="${esc(src)}" download style="color:var(--muted)">↓</a>` : ''}</span></figcaption>` +
+    (src ? `<video controls preload="${preload}" loop playsinline data-side="${side}" data-src="${esc(src)}"${poster ? ` poster="${esc(poster)}"` : ''}${onerror}></video>` : `<div class="placeholder">${esc(note || 'not generated yet')}</div>`) +
+    (comments ? commentsBlock(comments) : '') + '</figure>'
+}
+
+const commentsOf = (i, side) => { try { return JSON.parse(i.comments_json || '[]').filter((c) => c.side === side) } catch { return [] } }
 
 function cardHtml (i) {
   const refs = JSON.parse(i.ref_images_json || '[]')
@@ -467,19 +716,25 @@ function cardHtml (i) {
     <div class="meta">
       <span class="badge ${i.status}">${i.status}${i.status === 'running' ? progress : ''}</span>
       <span class="badge">${esc(i.mode)}</span><span class="badge">${i.quality}p</span><span class="badge">${esc(i.aspect)}${i.aspect_source !== 'row' ? '*' : ''}</span>
-      <span class="badge">${i.duration}s</span><span class="badge">${esc(styleOf(i))}</span>
+      <span class="badge">${i.duration}s</span>
+      <span class="badge" title="video type = the card chosen in the video picker (video_types)">video type: ${esc(i.video_type_name || i.video_type || '—')}</span>
+      <span class="badge" title="image style = the image style applied to the frames (ai_image_styles via meta.imageStyleId)">image style: ${esc(i.style_name || '—')}</span>
       ${i.flow ? `<span class="badge">${esc(i.flow)}</span>` : ''}
       ${i.duration_ms ? `<span class="badge">${Math.round(i.duration_ms / 1000)}s gen${i.reused ? ' (reused)' : ''}</span>` : ''}
       ${i.seed != null ? `<span class="badge">seed ${i.seed}</span>` : ''}
+      ${i.finished_at ? `<span class="badge" title="generated at (UTC)">🕒 ${esc(i.finished_at.slice(5, 16))}</span>` : ''}
+      ${i.workflow_id ? `<span class="badge" title="workflow id">wf #${i.workflow_id}</span>` : ''}
       ${probe && probe.width ? `<span class="badge">${probe.width}×${probe.height} ${probe.fps || ''}fps ${probe.duration ? probe.duration.toFixed(1) + 's' : ''}</span>` : ''}
       ${checks.map((c) => `<span class="badge ${c.ok ? 'yes' : 'no'}" title="${esc(c.detail)}">${c.name}</span>`).join('')}
       <span class="badge" title="production project id">#${esc(i.source_id || i.id)}</span>
     </div>
     <div class="vids">
-      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod' })}
-      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local' })}
+      ${videoOrPlaceholder({ src: prodSrc, fallback: i.prod_video_path ? i.prod_video_url : null, label: 'Production', side: 'prod', poster: i.prod_thumb ? `/thumbs/${encodeURIComponent(i.prod_thumb)}` : null, comments: { id: i.id, side: 'prod', count: i.prod_comment_count, list: commentsOf(i, 'prod') } })}
+      ${videoOrPlaceholder({ src: localSrc, label: 'Local (new workflow)', note: localNote, side: 'local', poster: i.output_thumb ? `/thumbs/${encodeURIComponent(i.output_thumb)}` : null, comments: { id: i.id, side: 'local', count: i.local_comment_count, list: commentsOf(i, 'local') } })}
     </div>
     <div class="controls">
+      <button class="star ${i.is_favorite ? 'sel' : ''}" onclick="toggleFavorite(${i.id}, this)" title="${i.favorited_by ? 'favorited by ' + esc(i.favorited_by.split(',').join(', ')) : 'add to my favorites'}">${i.is_favorite ? '★' : '☆'}${i.favorited_by ? ` ${i.favorited_by.split(',').length}` : ''}</button>
+      <button onclick="compareFullscreen(${i.id})" title="both videos side by side in full screen, synced">⛶ compare full screen</button>
       <button onclick="playBoth(${i.id})">▶ play both</button>
       <button onclick="pauseBoth(${i.id})">❚❚ pause</button>
       <button onclick="restartBoth(${i.id})">↺ restart</button>
@@ -498,13 +753,81 @@ function cardHtml (i) {
     </div>
     <div class="controls rate" data-id="${i.id}">
       ${['prod', 'local', 'tie'].map((r) => `<button class="${i.rating === r ? 'sel' : ''}" onclick="rate(${i.id}, '${r}', ${i.rating === r})">${r === 'prod' ? 'Prod better' : r === 'local' ? 'Local better' : 'Tie'}</button>`).join('')}
-      ${i.rated_at ? `<small style="color:var(--muted)">rated ${esc(i.rated_at)}</small>` : ''}
+      ${i.rated_at ? `<small style="color:var(--muted)">rated${i.rated_by ? ` by <b>${esc(i.rated_by)}</b>` : ''} ${esc(i.rated_at)}</small>` : ''}
     </div>
     <input class="note" placeholder="note (optional)" value="${esc(i.note || '')}" onchange="saveNote(${i.id}, this.value)">`
 }
 
 const vids = (id) => [...document.querySelectorAll(`#card-${id} video`)]
-window.playBoth = (id) => { vids(id).forEach((v) => { v.currentTime = 0; v.play().catch(() => {}) }) }
+
+// ---- full screen: one video (native) or both side by side, synced ----
+window.fullscreenOne = (btn) => {
+  const v = btn.closest('figure').querySelector('video')
+  if (!v) return
+  if (!v.src && v.dataset.src) v.src = v.dataset.src
+  const fs = v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen
+  if (fs) fs.call(v)
+  v.play().catch(() => {})
+}
+
+const cmp = { prod: null, local: null, raf: null }
+const cmpVideos = () => [$('cmpProd'), $('cmpLocal')]
+const fmtClock = (t) => { t = Math.max(0, t || 0); return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${String(Math.floor((t % 1) * 10))}` }
+const cmpDuration = () => Math.max(...cmpVideos().map((v) => v.duration || 0))
+const cmpUpdateBar = () => {
+  const a = $('cmpProd'); const d = cmpDuration()
+  $('cmpSeek').value = d ? Math.round((a.currentTime / d) * 1000) : 0
+  $('cmpTime').textContent = `${fmtClock(a.currentTime)} / ${fmtClock(d)}`
+  $('cmpPlay').textContent = a.paused ? '▶' : '❚❚'
+  // keep the two clips within a frame of each other (they may differ in length by a few frames)
+  const b = $('cmpLocal')
+  if (!a.paused && Math.abs(a.currentTime - b.currentTime) > 0.08 && b.duration) b.currentTime = Math.min(a.currentTime, b.duration - 0.01)
+  cmp.raf = requestAnimationFrame(cmpUpdateBar)
+}
+window.compareFullscreen = (id) => {
+  const row = instances.find((x) => x.id === id)
+  if (!row) return
+  const [p, l] = cmpVideos()
+  const prodSrc = row.prod_video_path ? `/prod/${encodeURIComponent(row.prod_video_path)}` : row.prod_video_url
+  const localSrc = row.output_path ? `/outputs/${encodeURIComponent(row.output_path)}` : ''
+  if (!localSrc) return alert('The local clip is not generated yet')
+  p.src = prodSrc; l.src = localSrc
+  p.poster = row.prod_thumb ? `/thumbs/${encodeURIComponent(row.prod_thumb)}` : ''; l.poster = row.output_thumb ? `/thumbs/${encodeURIComponent(row.output_thumb)}` : ''
+  p.muted = l.muted = $('cmpMute').checked
+  document.querySelector('.cmp-vids').classList.toggle('stacked', row.aspect === '16:9' && window.innerWidth < window.innerHeight)
+  $('cmpMeta').textContent = `#${row.source_id || row.id} · ${row.mode} · ${row.quality}p ${row.aspect} · ${row.duration}s · ${row.prompt.slice(0, 90)}${row.prompt.length > 90 ? '…' : ''}`
+  $('cmp').hidden = false
+  const fs = $('cmp').requestFullscreen || $('cmp').webkitRequestFullscreen
+  if (fs) fs.call($('cmp')).catch(() => {})
+  p.currentTime = 0; l.currentTime = 0
+  Promise.all([p.play(), l.play()]).catch(() => {})
+  cancelAnimationFrame(cmp.raf); cmpUpdateBar()
+}
+const cmpClose = () => {
+  cancelAnimationFrame(cmp.raf)
+  for (const v of cmpVideos()) { v.pause(); v.removeAttribute('src'); v.load() }
+  $('cmp').hidden = true
+  if (document.fullscreenElement === $('cmp')) document.exitFullscreen().catch(() => {})
+}
+$('cmpClose').onclick = cmpClose
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && !$('cmp').hidden) cmpClose() })
+$('cmpPlay').onclick = () => { const [p, l] = cmpVideos(); if (p.paused) { l.currentTime = p.currentTime; Promise.all([p.play(), l.play()]).catch(() => {}) } else { p.pause(); l.pause() } }
+$('cmpRestart').onclick = () => { for (const v of cmpVideos()) v.currentTime = 0 }
+$('cmpStep').onclick = () => { for (const v of cmpVideos()) { v.pause(); v.currentTime = Math.min((v.duration || 0) - 0.001, v.currentTime + 1 / 24) } }
+$('cmpSeek').oninput = () => { const t = ($('cmpSeek').value / 1000) * cmpDuration(); for (const v of cmpVideos()) v.currentTime = Math.min(t, (v.duration || t) - 0.001) }
+$('cmpMute').onchange = () => { for (const v of cmpVideos()) v.muted = $('cmpMute').checked }
+$('cmpSwap').onchange = () => { const box = document.querySelector('.cmp-vids'); box.appendChild(box.firstElementChild) }
+document.addEventListener('keydown', (e) => {
+  if ($('cmp').hidden) return
+  if (e.key === 'Escape') { e.preventDefault(); cmpClose() }
+  if (e.key === ' ') { e.preventDefault(); $('cmpPlay').click() }
+  if (e.key === '.') { e.preventDefault(); $('cmpStep').click() }
+  if (e.key === ',') { e.preventDefault(); for (const v of cmpVideos()) { v.pause(); v.currentTime = Math.max(0, v.currentTime - 1 / 24) } }
+  if (e.key === 'r') { e.preventDefault(); $('cmpRestart').click() }
+  if (e.key === 'm') { e.preventDefault(); $('cmpMute').checked = !$('cmpMute').checked; $('cmpMute').onchange() }
+  if (e.key === 's') { e.preventDefault(); $('cmpSwap').checked = !$('cmpSwap').checked; $('cmpSwap').onchange() }
+})
+window.playBoth = (id) => { vids(id).forEach((v) => { if (!v.src && v.dataset.src) v.src = v.dataset.src; v.currentTime = 0; v.play().catch(() => {}) }) }
 window.pauseBoth = (id) => vids(id).forEach((v) => v.pause())
 window.restartBoth = (id) => vids(id).forEach((v) => { v.currentTime = 0 })
 window.muteBoth = (id, muted) => vids(id).forEach((v) => { v.muted = muted })
@@ -515,19 +838,79 @@ window.copyText = async (btn, id) => {
   try { await navigator.clipboard.writeText(text) } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove() }
   const old = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = old }, 1200)
 }
-window.rate = async (id, rating, already) => { await post(`/api/instances/${id}/rating`, { rating: already ? null : rating }); refresh(false) }
+const commentHtml = (c) => `<div class="comment" data-id="${c.id}">${avatar(c.author)}<div class="body"><div class="who"><b>${esc(c.author)}</b> · ${esc(fmtTime(c.created_at))}${c.author === userName ? ` <button class="del" title="delete" onclick="deleteComment(${c.id}, this)">✕</button>` : ''}</div><div class="text">${esc(c.body)}</div></div></div>`
+window.loadComments = async (id, side) => {
+  const box = document.querySelector(`#comments-${id}-${side} .clist`)
+  if (!box) return
+  const list = await api(`/api/instances/${id}/comments?side=${side}`)
+  box.innerHTML = list.length ? list.map(commentHtml).join('') : '<div class="hint">no comments yet</div>'
+}
+window.postComment = async (id, side, ta) => {
+  const body = ta.value.trim()
+  if (!body) return
+  if (!(await ensureUser())) return
+  try {
+    const c = await api(`/api/instances/${id}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body, side, author: userName }) })
+    ta.value = ''
+    const row = instances.find((x) => x.id === id)
+    if (row) { const list = JSON.parse(row.comments_json || '[]'); list.push(c); row.comments_json = JSON.stringify(list); row[`${side}_comment_count`] = (row[`${side}_comment_count`] || 0) + 1; cardSig.set(`card-${id}`, signature(row)) }
+    const box = document.querySelector(`#comments-${id}-${side} .clist`)
+    if (box.querySelector('.hint')) box.innerHTML = ''
+    box.insertAdjacentHTML('beforeend', commentHtml(c))
+    const sum = document.querySelector(`#comments-${id}-${side} summary`)
+    const n = box.querySelectorAll('.comment').length
+    sum.textContent = `💬 ${n} comment${n === 1 ? '' : 's'} on ${side === 'prod' ? 'production' : 'local'}`
+  } catch (err) { alert(err.message) }
+}
+window.deleteComment = async (cid, btn) => {
+  if (!confirm('Delete this comment?')) return
+  try {
+    await api(`/api/comments/${cid}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) })
+    const card = btn.closest('.card'); const row = instances.find((x) => `card-${x.id}` === card.id)
+    if (row) { const list = JSON.parse(row.comments_json || '[]').filter((c) => c.id !== cid); row.comments_json = JSON.stringify(list); cardSig.set(card.id, signature(row)) }
+    btn.closest('.comment').remove()
+  } catch (err) { alert(err.message) }
+}
+
+window.toggleFavorite = async (id, btn) => {
+  if (!(await ensureUser())) return
+  try {
+    const r = await api(`/api/instances/${id}/favorite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ author: userName }) })
+    btn.className = `star ${r.favorite ? 'sel' : ''}`
+    btn.textContent = `${r.favorite ? '★' : '☆'}${r.favoritedBy.length ? ` ${r.favoritedBy.length}` : ''}`
+    btn.title = r.favoritedBy.length ? `favorited by ${r.favoritedBy.join(', ')}` : 'add to my favorites'
+    const row = instances.find((x) => x.id === id)
+    if (row) { row.is_favorite = r.favorite ? 1 : 0; row.favorited_by = r.favoritedBy.join(',') || null; cardSig.set(`card-${id}`, signature(row)) }
+  } catch (err) { alert(err.message) }
+}
+
+window.rate = async (id, rating, already) => {
+  if (!already && !(await ensureUser())) return
+  const next = already ? null : rating
+  await post(`/api/instances/${id}/rating`, { rating: next, author: userName })
+  const index = instances.findIndex((r) => r.id === id)
+  const row = instances[index]
+  if (row) {
+    row.rating = next
+    row.rated_by = next ? userName : null
+    row.rated_at = next ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null
+    pinned.set(id, { row, index })
+    renderGrid()
+  }
+  refresh(false)
+}
 window.saveNote = async (id, note) => { await post(`/api/instances/${id}/note`, { note }) }
 window.retryOne = async (id) => { await post(`/api/instances/${id}/retry`, {}); refresh(false) }
 window.showGraph = async (id) => {
   try {
-    const res = await api(`/api/instances/${id}/graph?workflowId=${Number($('wfSelect').value) || ''}`)
-    $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">Graph for row ${id}</h3><b>values</b><pre>${esc(JSON.stringify(res.values, null, 2))}</pre><b>graph (API format)</b><pre>${esc(JSON.stringify(res.graph, null, 2))}</pre><div class="row" style="justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
+    const res = await api(`/api/instances/${id}/graph`)
+    $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">Graph for row ${id} <small style="color:var(--muted)">workflow ${esc(res.workflow.name)}</small></h3><b>values</b><pre>${esc(JSON.stringify(res.values, null, 2))}</pre><b>graph (API format)</b><pre>${esc(JSON.stringify(res.graph, null, 2))}</pre><div class="row" style="justify-content:flex-end"><button onclick="document.getElementById('textDlg').close()">Close</button></div>`
     $('textDlg').showModal()
   } catch (err) { alert(err.message) }
 }
 
 // ---- actions ----
-const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 } })
+const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 }, workflowsByMode: workflowsByModeFromUi() })
 $('startBtn').onclick = async () => {
   try {
     await post(`/api/runs/${currentRunId}/start`, { workflowId: Number($('wfSelect').value) || null, settings: settingsPayload() })
@@ -539,9 +922,10 @@ $('stopBtn').onclick = async () => {
   try { await post(`/api/runs/${currentRunId}/stop`, {}) } catch (err) { alert(err.message) }
   setTimeout(() => { $('stopBtn').disabled = false; $('stopBtn').textContent = 'Stop generation'; refresh(false) }, 1500)
 }
+$('thumbsBtn').onclick = async () => { try { await post(`/api/runs/${currentRunId}/thumbnails`, {}); alert('Thumbnail backfill started') } catch (err) { alert(err.message) } }
 $('resetFailedBtn').onclick = async () => { const r = await post(`/api/runs/${currentRunId}/reset-failed`, {}); alert(`${r.reset} rows set back to pending`); refresh(false) }
 $('resampleBtn').onclick = async () => {
-  try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }
+  try { const r = await post(`/api/runs/${currentRunId}/sample`, { perCell: Number($('perCell').value) || 5 }); alert(`Added ${r.added}, removed ${r.removed || 0} rows (now ${r.sampled} sampled across ${r.cells} cells)`); cardSig.clear(); refresh(false) } catch (err) { alert(err.message) }
 }
 $('uploadCsvBtn').onclick = async () => {
   const file = $('csvFile').files[0]

@@ -5,11 +5,15 @@ import multer from 'multer'
 import db from './db.js'
 import config from './config.js'
 import { importCsv, sampleRun, coverage } from './scenario.js'
-import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph } from './runner.js'
-import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses } from './workflow.js'
+import { runPending, isRunActive, requestStop, interruptComfy, currentProgress, prepareGraph, resolveWorkflows, settingsOf, hydrate, runStopReason, startWatchdog, backfillFinishedAt } from './runner.js'
+import { freeDiskGb, lowDiskReason } from './disk.js'
+import { parseWorkflowUpload, sha1, capabilities, detectBindings, missingClasses, DETECTOR_VERSION } from './workflow.js'
 import { exportInstancesCsv, exportSummaryCsv } from './export.js'
 import { ComfyClient } from './comfy.js'
-import { MODES, QUALITIES } from './csv.js'
+import { backfillThumbnails, isBackfillRunning } from './thumbnails.js'
+import { THUMBS_DIR, getBinaries } from './media.js'
+import { QUALITIES } from './csv.js'
+import { MODES } from './workflow.js'
 
 const app = express()
 app.use(express.json({ limit: '5mb' }))
@@ -18,6 +22,7 @@ for (const dir of [config.OUTPUTS_DIR, config.PROD_DIR, config.INPUTS_DIR, confi
 app.use('/outputs', express.static(config.OUTPUTS_DIR, { acceptRanges: true }))
 app.use('/prod', express.static(config.PROD_DIR, { acceptRanges: true }))
 app.use('/inputs', express.static(config.INPUTS_DIR))
+app.use('/thumbs', express.static(THUMBS_DIR, { maxAge: '7d' }))
 
 const uploadCsv = multer({ dest: config.CSV_DIR, limits: { fileSize: 1024 * 1024 * 1024 } })
 const uploadJson = multer({ limits: { fileSize: 20 * 1024 * 1024 } })
@@ -40,7 +45,7 @@ const runStats = db.prepare(`
   FROM instances WHERE run_id = ?
 `)
 
-const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id) })
+const withStats = (run) => ({ ...run, settings: JSON.parse(run.settings_json || '{}'), ...runStats.get(run.id), active: isRunActive(run.id), stop_reason: runStopReason(run.id) || run.last_stop || null })
 
 const handle = (fn) => async (req, res) => {
   try {
@@ -53,24 +58,30 @@ const handle = (fn) => async (req, res) => {
 // ---- health ----
 
 app.get('/api/health', handle(async (req, res) => {
-  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
+  const bins = await getBinaries()
+  const freeGb = await freeDiskGb().catch(() => null)
+  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), disk: { freeGb: freeGb == null ? null : Math.round(freeGb * 10) / 10, minFreeGb: config.MIN_FREE_DISK_GB, comfyOutputDir: config.COMFY_OUTPUT_DIR || null }, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
 }))
+
+// thumbnails are made automatically when a clip finishes; this fills in older rows
+app.post('/api/runs/:id/thumbnails', (req, res) => {
+  if (isBackfillRunning()) return res.status(409).json({ error: 'Thumbnail backfill already running' })
+  backfillThumbnails({ runId: Number(req.params.id) }).then((r) => console.log(`[thumbs] run ${req.params.id}: ${JSON.stringify(r)}`))
+  res.json({ started: true })
+})
 
 // ---- workflows ----
 
 app.get('/api/workflows', (req, res) => {
-  const rows = db.prepare('SELECT id, name, sha1, bindings_json, created_at FROM workflows ORDER BY id DESC').all()
-  res.json(rows.map((w) => {
-    const bindings = JSON.parse(w.bindings_json)
-    return { id: w.id, name: w.name, sha1: w.sha1, createdAt: w.created_at, bindings, capabilities: capabilities(bindings) }
-  }))
+  const rows = db.prepare('SELECT * FROM workflows ORDER BY id DESC').all().map(hydrate)
+  res.json(rows.map((w) => ({ id: w.id, name: w.name, sha1: w.sha1, createdAt: w.created_at, bindings: w.bindings, capabilities: w.caps })))
 })
 
 app.get('/api/workflows/:id', handle(async (req, res) => {
-  const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id)
-  if (!w) return res.status(404).json({ error: 'Workflow not found' })
-  const graph = JSON.parse(w.json)
-  const bindings = JSON.parse(w.bindings_json)
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workflow not found' })
+  const w = hydrate(row)
+  const { graph, bindings } = w
   let missing = null
   try {
     missing = missingClasses({ graph, objectInfo: await comfy.getObjectInfo() })
@@ -86,7 +97,7 @@ app.post('/api/workflows', uploadJson.single('workflow'), handle(async (req, res
   const { graph, bindings, notes } = parseWorkflowUpload(raw)
   const name = req.body.name || (req.file ? req.file.originalname.replace(/\.json$/i, '') : `workflow-${Date.now()}`)
   const json = JSON.stringify(graph)
-  const { lastInsertRowid } = db.prepare('INSERT INTO workflows (name, json, bindings_json, sha1) VALUES (?, ?, ?, ?)').run(name, json, JSON.stringify(bindings), sha1(json))
+  const { lastInsertRowid } = db.prepare('INSERT INTO workflows (name, json, bindings_json, sha1, detector_version) VALUES (?, ?, ?, ?, ?)').run(name, json, JSON.stringify(bindings), sha1(json), DETECTOR_VERSION)
   let missing = []
   try {
     missing = missingClasses({ graph, objectInfo: await comfy.getObjectInfo({ force: true }) })
@@ -106,7 +117,7 @@ app.put('/api/workflows/:id/bindings', handle(async (req, res) => {
   const graph = JSON.parse(w.json)
   const unknown = bindings.filter((b) => !graph[b.node])
   if (unknown.length) return res.status(400).json({ error: `Unknown node ids: ${unknown.map((b) => b.node).join(', ')}` })
-  db.prepare('UPDATE workflows SET bindings_json = ? WHERE id = ?').run(JSON.stringify(bindings), w.id)
+  db.prepare('UPDATE workflows SET bindings_json = ?, detector_version = ? WHERE id = ?').run(JSON.stringify(bindings), DETECTOR_VERSION, w.id)
   res.json({ ok: true, bindings, capabilities: capabilities(bindings) })
 }))
 
@@ -133,13 +144,108 @@ app.get('/api/runs/:id/coverage', (req, res) => {
   res.json(coverage(Number(req.params.id)))
 })
 
+// which workflow will serve each mode (explicit choice → run default → newest capable upload)
+app.get('/api/runs/:id/workflows', (req, res) => {
+  const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
+  if (!run) return res.status(404).json({ error: 'Run not found' })
+  const { byMode, sources } = resolveWorkflows(run)
+  res.json(Object.fromEntries(MODES.map((m) => [m, byMode[m] ? { id: byMode[m].id, name: byMode[m].name, source: sources[m] } : null])))
+})
+
+// Filtered + paginated page of sampled rows. Without `page` the full list is returned (CLI / scripts).
+const instanceFilters = (query) => {
+  const where = ['run_id = ?', 'sampled = 1']
+  const params = [Number(query.runId)]
+  const eq = (column, value) => {
+    if (value === undefined || value === '') return
+    where.push(`${column} = ?`)
+    params.push(value)
+  }
+  eq('mode', query.mode)
+  eq('quality', query.quality && Number(query.quality))
+  eq('aspect', query.aspect)
+  eq('duration_bucket', query.duration_bucket)
+  eq('status', query.status)
+  eq('scenario_key', query.scenario)
+  if (query.style) {
+    where.push("(COALESCE(video_type_name, video_type, '') || '|' || COALESCE(style_name, 'none')) = ?")
+    params.push(query.style)
+  }
+  if (query.video_type) {
+    where.push(query.video_type === '-' ? "COALESCE(video_type_name, video_type) IS NULL" : 'COALESCE(video_type_name, video_type) = ?')
+    if (query.video_type !== '-') params.push(query.video_type)
+  }
+  if (query.image_style) {
+    where.push(query.image_style === '-' ? 'style_name IS NULL' : 'style_name = ?')
+    if (query.image_style !== '-') params.push(query.image_style)
+  }
+  if (query.rating === 'unrated') where.push('rating IS NULL')
+  else if (query.rating) {
+    where.push('rating = ?')
+    params.push(query.rating)
+  }
+  if (query.problems === '1') where.push("checks_json LIKE '%\"ok\":false%'")
+  if (query.commented === '1') where.push('EXISTS (SELECT 1 FROM comments c WHERE c.instance_id = i.id)')
+  if (query.favorited_by) {
+    where.push('EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id AND f.user = ?)')
+    params.push(query.favorited_by)
+  } else if (query.favorites === '1') where.push('EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id)')
+  if (query.rated_by) {
+    where.push('rated_by = ?')
+    params.push(query.rated_by)
+  }
+  if (query.q) {
+    where.push('(prompt LIKE ? OR source_id = ?)')
+    params.push(`%${query.q}%`, query.q)
+  }
+  return { where: where.join(' AND '), params }
+}
+
 app.get('/api/runs/:id/instances', (req, res) => {
-  const all = req.query.all === '1'
+  if (req.query.all === '1') {
+    return res.json(db.prepare('SELECT * FROM instances WHERE run_id = ? ORDER BY scenario_key, id').all(req.params.id))
+  }
+  const { where, params } = instanceFilters({ ...req.query, runId: req.params.id })
+  const withProgress = (i) => ({ ...i, progress: i.status === 'running' ? currentProgress(i.id) : null })
+  if (req.query.page === undefined) {
+    return res.json(db.prepare(`SELECT i.* FROM instances i WHERE ${where} ORDER BY scenario_key, id`).all(...params).map(withProgress))
+  }
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize) || 24))
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM instances i WHERE ${where}`).get(...params).c
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(pages, Math.max(1, Number(req.query.page) || 1))
+  // default: by local generation time, oldest first, so new clips append at the end; rows not generated yet come last
+  const orderBy = req.query.order === 'scenario' ? 'scenario_key, id' : req.query.order === 'newest' ? 'finished_at IS NULL, finished_at DESC, id DESC' : 'finished_at IS NULL, finished_at ASC, id'
   const rows = db
-    .prepare(`SELECT * FROM instances WHERE run_id = ? ${all ? '' : 'AND sampled = 1'} ORDER BY scenario_key, id`)
-    .all(req.params.id)
-    .map((i) => ({ ...i, progress: i.status === 'running' ? currentProgress(i.id) : null }))
-  res.json(rows)
+    .prepare(`SELECT i.*, (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id) AS comment_count,
+                     (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'prod') AS prod_comment_count,
+                     (SELECT COUNT(*) FROM comments c WHERE c.instance_id = i.id AND c.side = 'local') AS local_comment_count,
+                     (SELECT GROUP_CONCAT(DISTINCT author) FROM comments c WHERE c.instance_id = i.id) AS commenters,
+                     (SELECT GROUP_CONCAT(user) FROM favorites f WHERE f.instance_id = i.id) AS favorited_by,
+                     (SELECT json_group_array(json_object('id', c.id, 'side', c.side, 'author', c.author, 'body', c.body, 'created_at', c.created_at))
+                        FROM (SELECT * FROM comments c WHERE c.instance_id = i.id ORDER BY c.id) c) AS comments_json,
+                     EXISTS (SELECT 1 FROM favorites f WHERE f.instance_id = i.id AND f.user = ?) AS is_favorite
+              FROM instances i WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
+    .all(String(req.get('x-user') || ''), ...params, pageSize, (page - 1) * pageSize)
+    .map(withProgress)
+  res.json({ total, page, pages, pageSize, rows })
+})
+
+// distinct filter values, computed in SQL so the browser never loads the whole run
+app.get('/api/runs/:id/filters', (req, res) => {
+  const runId = Number(req.params.id)
+  const distinct = (expr) => db.prepare(`SELECT DISTINCT ${expr} AS v FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY 1`).all(runId).map((r) => r.v).filter((v) => v != null)
+  const styles = db
+    .prepare("SELECT COALESCE(video_type_name, video_type, '') AS vt, COALESCE(style_name, 'none') AS st, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1, 2 ORDER BY 1, 2")
+    .all(runId)
+    .map((r) => ({ value: `${r.vt}|${r.st}`, label: r.vt ? `${r.vt} / ${r.st}` : r.st, count: r.c }))
+  const statuses = db.prepare('SELECT status AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1').all(runId)
+  const people = db.prepare(`SELECT DISTINCT author AS v FROM comments WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?)
+                             UNION SELECT DISTINCT rated_by FROM instances WHERE run_id = ? AND rated_by IS NOT NULL
+                             UNION SELECT DISTINCT user FROM favorites WHERE instance_id IN (SELECT id FROM instances WHERE run_id = ?) ORDER BY 1`).all(runId, runId, runId).map((r) => r.v)
+  const videoTypes = db.prepare("SELECT COALESCE(video_type_name, video_type, '-') AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1").all(runId)
+  const imageStyles = db.prepare("SELECT COALESCE(style_name, '-') AS v, COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1 GROUP BY 1 ORDER BY 1").all(runId)
+  res.json({ mode: distinct('mode'), quality: distinct('quality'), aspect: distinct('aspect'), duration_bucket: distinct('duration_bucket'), style: styles, video_type: videoTypes, image_style: imageStyles, status: statuses, people })
 })
 
 app.post('/api/upload', uploadCsv.single('csv'), handle(async (req, res) => {
@@ -177,12 +283,13 @@ app.post('/api/runs/:id/start', handle(async (req, res) => {
   if (isRunActive(runId)) return res.status(409).json({ error: 'Run already in progress' })
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
   if (!run) return res.status(404).json({ error: 'Run not found' })
-  const workflowId = Number(req.body?.workflowId) || run.workflow_id
-  if (!workflowId || !db.prepare('SELECT id FROM workflows WHERE id = ?').get(workflowId)) {
-    return res.status(400).json({ error: 'Select or upload a workflow first' })
-  }
+  const workflowId = Number(req.body?.workflowId) || run.workflow_id || null
   const settings = { ...JSON.parse(run.settings_json || '{}'), ...(req.body?.settings || {}) }
   db.prepare('UPDATE runs SET workflow_id = ?, settings_json = ? WHERE id = ?').run(workflowId, JSON.stringify(settings), runId)
+  const { byMode } = resolveWorkflows({ ...run, workflow_id: workflowId, settings_json: JSON.stringify(settings) })
+  if (!Object.values(byMode).some(Boolean)) return res.status(400).json({ error: 'Upload a workflow first' })
+  const lowDisk = await lowDiskReason()
+  if (lowDisk) return res.status(507).json({ error: `Not starting: ${lowDisk}. Free space (delete old runs) and try again.` })
   if (!(await comfy.ping())) return res.status(503).json({ error: `ComfyUI is not reachable at ${config.COMFY_URL}` })
   runPending({ runId }).then(
     (r) => console.log(`[run ${runId}] finished: ${JSON.stringify(r)}`),
@@ -251,11 +358,87 @@ app.get('/api/runs/:id/summary.csv', (req, res) => {
 
 // ---- instances ----
 
+const touchUser = db.prepare("INSERT INTO users (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET last_seen = datetime('now')")
+const authorOf = (req) => {
+  const name = String(req.body?.author || req.get('x-user') || '').trim().slice(0, 60)
+  if (name) touchUser.run(name)
+  return name
+}
+
+// ---- users: the picker shown when the page opens ----
+
+app.get('/api/users', (req, res) => {
+  // people known from any activity, newest activity first
+  db.prepare(`INSERT OR IGNORE INTO users (name) SELECT DISTINCT author FROM comments
+              UNION SELECT DISTINCT user FROM favorites UNION SELECT DISTINCT rated_by FROM instances WHERE rated_by IS NOT NULL`).run()
+  res.json(db.prepare('SELECT name, created_at, last_seen FROM users ORDER BY last_seen DESC').all())
+})
+
+app.post('/api/users', (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 60)
+  if (!name) return res.status(400).json({ error: 'Name required' })
+  touchUser.run(name)
+  res.json(db.prepare('SELECT name, created_at, last_seen FROM users WHERE name = ?').get(name))
+})
+
+app.delete('/api/users/:name', (req, res) => {
+  const result = db.prepare('DELETE FROM users WHERE name = ?').run(req.params.name)
+  if (!result.changes) return res.status(404).json({ error: 'User not found' })
+  res.json({ ok: true })
+})
+
 app.post('/api/instances/:id/rating', (req, res) => {
   const { rating } = req.body || {}
   if (![null, 'prod', 'local', 'tie'].includes(rating)) return res.status(400).json({ error: 'rating must be prod|local|tie|null' })
-  const result = db.prepare("UPDATE instances SET rating = ?, rated_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END WHERE id = ?").run(rating, rating, req.params.id)
+  const author = rating ? authorOf(req) || null : null
+  const result = db.prepare("UPDATE instances SET rating = ?, rated_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, rated_by = ? WHERE id = ?").run(rating, rating, author, req.params.id)
   if (!result.changes) return res.status(404).json({ error: 'Instance not found' })
+  res.json({ ok: true })
+})
+
+// ---- favorites (per user) ----
+
+app.post('/api/instances/:id/favorite', (req, res) => {
+  const user = authorOf(req)
+  if (!user) return res.status(400).json({ error: 'Set your name first (top right)' })
+  if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'Instance not found' })
+  const existing = db.prepare('SELECT id FROM favorites WHERE instance_id = ? AND user = ?').get(req.params.id, user)
+  if (existing) db.prepare('DELETE FROM favorites WHERE id = ?').run(existing.id)
+  else db.prepare('INSERT INTO favorites (instance_id, user) VALUES (?, ?)').run(req.params.id, user)
+  const users = db.prepare('SELECT user FROM favorites WHERE instance_id = ? ORDER BY id').all(req.params.id).map((r) => r.user)
+  res.json({ favorite: !existing, favoritedBy: users })
+})
+
+app.get('/api/favorites', (req, res) => {
+  const user = String(req.query.user || req.get('x-user') || '')
+  if (!user) return res.status(400).json({ error: 'user required' })
+  res.json(db.prepare('SELECT f.instance_id, f.created_at, i.run_id FROM favorites f JOIN instances i ON i.id = f.instance_id WHERE f.user = ? ORDER BY f.id DESC').all(user))
+})
+
+// ---- comments (per user; the author is whatever name the browser sends) ----
+
+// two threads per row: one about the production clip, one about the local (new workflow) clip
+app.get('/api/instances/:id/comments', (req, res) => {
+  const rows = db.prepare('SELECT id, side, author, body, created_at FROM comments WHERE instance_id = ? ORDER BY id').all(req.params.id)
+  res.json(req.query.side ? rows.filter((c) => c.side === req.query.side) : rows)
+})
+
+app.post('/api/instances/:id/comments', (req, res) => {
+  const author = authorOf(req)
+  const body = String(req.body?.body || '').trim().slice(0, 4000)
+  const side = req.body?.side === 'prod' ? 'prod' : 'local'
+  if (!author) return res.status(400).json({ error: 'Set your name first (top right)' })
+  if (!body) return res.status(400).json({ error: 'Empty comment' })
+  if (!db.prepare('SELECT id FROM instances WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'Instance not found' })
+  const { lastInsertRowid } = db.prepare('INSERT INTO comments (instance_id, side, author, body) VALUES (?, ?, ?, ?)').run(req.params.id, side, author, body)
+  res.json(db.prepare('SELECT id, side, author, body, created_at FROM comments WHERE id = ?').get(lastInsertRowid))
+})
+
+app.delete('/api/comments/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM comments WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Comment not found' })
+  if (row.author !== authorOf(req)) return res.status(403).json({ error: 'Only the author can delete a comment' })
+  db.prepare('DELETE FROM comments WHERE id = ?').run(row.id)
   res.json({ ok: true })
 })
 
@@ -275,14 +458,25 @@ app.get('/api/instances/:id/graph', handle(async (req, res) => {
   const instance = db.prepare('SELECT * FROM instances WHERE id = ?').get(req.params.id)
   if (!instance) return res.status(404).json({ error: 'Instance not found' })
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(instance.run_id)
-  const workflowId = Number(req.query.workflowId) || run.workflow_id
-  const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
-  if (!w) return res.status(400).json({ error: 'No workflow selected' })
-  const workflow = { ...w, graph: JSON.parse(w.json), bindings: JSON.parse(w.bindings_json) }
-  const settings = { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(JSON.parse(run.settings_json || '{}').qualityMegapixels || {}) } }
+  let workflow = null
+  if (req.query.workflowId) {
+    const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(Number(req.query.workflowId))
+    workflow = w && hydrate(w)
+  } else workflow = resolveWorkflows(run).byMode[instance.mode]
+  if (!workflow) return res.status(400).json({ error: `No workflow serves mode ${instance.mode}` })
+  const settings = settingsOf(run)
   const dryClient = { getObjectInfo: () => comfy.getObjectInfo().catch(() => ({})), uploadFile: async ({ filename }) => `(upload) ${filename}` }
   const { graph, values } = await prepareGraph({ client: dryClient, instance, workflow, settings, seed: instance.seed ?? 12345 })
-  res.json({ values, graph })
+  res.json({ workflow: { id: workflow.id, name: workflow.name }, values, graph })
 }))
 
-app.listen(config.PORT, config.HOST, () => console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`))
+app.listen(config.PORT, config.HOST, async () => {
+  console.log(`video-compare: http://${config.HOST}:${config.PORT} (ComfyUI ${config.COMFY_URL})`)
+  const bins = await getBinaries()
+  console.log(`[media] ffmpeg: ${bins.ffmpeg || 'none'} · ffprobe: ${bins.ffprobe || 'none'}`)
+  const dated = backfillFinishedAt()
+  if (dated) console.log(`[order] finished_at back-filled for ${dated} rows from file dates`)
+  // fill in posters for clips generated before thumbnails existed (or while ffmpeg was missing)
+  if (bins.ffmpeg) backfillThumbnails().then((r) => r.candidates && console.log(`[thumbs] backfill: ${JSON.stringify(r)}`))
+  startWatchdog()
+})

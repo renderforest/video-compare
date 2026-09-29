@@ -18,8 +18,17 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
 4. **Generate**: sampled rows run one at a time on ComfyUI (single GPU) with a fixed seed per row,
    the output is streamed to `data/outputs/`, the old clip is archived in `data/prod/`, and ffprobe (if
    installed) records dims/fps/audio for sanity badges. Resumable, one automatic retry, Stop button.
-5. **Review & export**: filter by scenario, play both clips in sync, rate, add notes; export per-row and
-   per-cell summary CSVs.
+5. **Review & export**: rows are paged and filtered server-side (default view: done + unrated), both clips
+   play in sync, rate, add notes; export per-row and per-cell summary CSVs.
+
+Users: on first open a dialog asks you to pick an existing user or add a new one (kept in the browser; the header button switches) and sends it with every rating
+and comment (`x-user` header / `author` field). Each card has two comment threads, one under the production clip and one under the local clip; only the author can delete their
+comment. A ★ on each card adds it to your favorites (per name); filters: "rated by", "favorited by", "★ my favorites", "with comments". Exports carry `ratedBy`, `favoritedBy` and the two comment columns.
+
+Thumbnails: when a clip finishes (hook `generation:finished` in `src/hooks.js`) and when a production clip is
+cached (`prod:cached`), a 320 px JPEG poster is written to `data/thumbs/` with ffmpeg (system binary, else the
+bundled `ffmpeg-static`). Posters let the review page show every card without loading a video. Rows from before
+the feature are back-filled on server start, or with the **Thumbnails** button / `POST /api/runs/:id/thumbnails`.
 
 Mode is derived exactly like the production worker (`ai-workers-service getWorkflowConfig`):
 reference media → `refi2v`, voice-over audio → `ia2v`, last frame → `flf`, first frame → `i2v`, else `t2v`.
@@ -33,7 +42,9 @@ cp .env.example .env    # COMFY_URL, PORT, HOST, JOB_TIMEOUT_MS, PUBLIC_BASE_URL
 npm run serve           # http://<host>:3001
 ```
 
-`ffprobe` on PATH is optional (better output checks). On gen22 the ComfyUI instance is `http://127.0.0.1:8188`.
+On gen22 the ComfyUI instance is `http://127.0.0.1:8188`. Generation refuses to start and pauses itself when the data
+disk has less than `MIN_FREE_DISK_GB` (default 30) free; with `COMFY_OUTPUT_DIR` set, our clips are deleted from
+ComfyUI's output folder once downloaded so the disk is not used twice.
 
 ### CLI
 

@@ -23,6 +23,10 @@ test('normalizeRecord infers aspect from the production output when the row has 
   assert.equal(row.duration_bucket, '4-6')
   assert.equal(row.scenario_key, 'i2v | 720 | 9:16 | 4-6 | Anime / Anime')
   assert.equal(normalizeRecord({ videoUrl: 'null', prompt: 'p' }).skip, 'no production video url')
+  const pgNull = normalizeRecord({ videoUrl: 'https://x/v.mp4', quality: '480', videoDurationSeconds: '5', prompt: 'p', referenceImages: '\\N', referenceAudios: '\\N', voiceOverUrl: '\\N', firstFrameUrl: '\\N', lastFrameUrl: '\\N', aspectRatio: '\\N', width: '854', height: '480' }).row
+  assert.equal(pgNull.mode, 't2v')
+  assert.equal(pgNull.aspect, '16:9')
+  assert.equal(pgNull.ref_images_json, '[]')
 })
 
 test('dims follow the production worker tables', () => {
@@ -50,7 +54,7 @@ test('detects bindings of the h3 workflow', () => {
   const caps = capabilities(bindings)
   assert.deepEqual(caps.modes, { t2v: true, i2v: true, flf: false, ia2v: false, refi2v: true })
   assert.equal(unsupportedReason({ caps, instance: { mode: 'ia2v', ref_images_json: '[]', ref_audios_json: '[]' } }), 'workflow has no inputs for mode ia2v')
-  assert.match(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a","b"]', ref_audios_json: '[]' } }), /needs 2 image slots/)
+  assert.match(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a","b"]', ref_audios_json: '[]' } }), /needs 2 reference image slots/)
 })
 
 test('builds an i2v graph and prunes the image loader for t2v', () => {
@@ -76,4 +80,44 @@ test('builds an i2v graph and prunes the image loader for t2v', () => {
   assert.equal(t2v['10'], undefined)
   assert.equal(t2v['18'].inputs['ref_images.ref_image_0'], undefined)
   assert.ok(t2v['18'].inputs.prompt)
+})
+
+test('first/last-frame graph: roles come from the inputs the loaders feed', () => {
+  const flv = JSON.parse(fs.readFileSync(new URL('../workflows/H3_FLV.json', import.meta.url), 'utf8'))
+  const { bindings } = detectBindings(flv)
+  const images = bindings.filter((b) => b.key.startsWith('image_'))
+  assert.deepEqual(images.map((b) => [b.node, b.role]), [['10', 'firstFrame'], ['264', 'lastFrame']])
+  const caps = capabilities(bindings)
+  assert.deepEqual(caps.modes, { t2v: true, i2v: true, flf: true, ia2v: false, refi2v: false })
+  const instance = { mode: 'flf', first_frame_url: 'https://x/a.jpg', last_frame_url: 'https://x/b.jpg', ref_images_json: '[]', ref_audios_json: '[]' }
+  const { images: assigned } = assignMedia({ bindings, instance })
+  assert.deepEqual(assigned.map((a) => [a.binding.key, a.url]), [['image_1', 'https://x/a.jpg'], ['image_2', 'https://x/b.jpg']])
+})
+
+test('reference graph: refi2v counts only reference-fed slots', () => {
+  const { bindings } = detectBindings(graph)
+  const caps = capabilities(bindings)
+  assert.equal(caps.referenceSlots, 1)
+  assert.equal(unsupportedReason({ caps, instance: { mode: 'refi2v', ref_images_json: '["a"]', ref_audios_json: '[]' } }), null)
+})
+
+test('lowering rows per cell drops only ungenerated rows', async () => {
+  const { importCsv, sampleRun, coverage } = await import('../src/scenario.js')
+  const db = (await import('../src/db.js')).default
+  const csv = new URL('./fixtures/cells.csv', import.meta.url)
+  fs.mkdirSync(new URL('./fixtures/', import.meta.url), { recursive: true })
+  const header = 'id,createdAt,userId,videoModel,quality,aspectRatio,videoDurationSeconds,prompt,firstFrameUrl,lastFrameUrl,voiceOverUrl,audioStartTime,referenceImages,referenceAudios,styleId,styleName,videoType,videoTypeName,flow,width,height,videoUrl,mode,durationBucket'
+  const rows = Array.from({ length: 8 }, (_, i) => `${i},2026-09-01,1,renderforest-pro,480,16:9,5,p${i},,,,,,,,,,,,854,480,https://x/v${i}.mp4,,`)
+  fs.writeFileSync(csv, [header, ...rows].join('\n'))
+  const { runId, sampled } = await importCsv({ csvPath: csv.pathname, name: 'cells', perCell: 6, seed: 1 })
+  assert.equal(sampled, 6)
+  const done = db.prepare('SELECT id FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY id LIMIT 2').all(runId)
+  for (const d of done) db.prepare("UPDATE instances SET status = 'done' WHERE id = ?").run(d.id)
+  const r = sampleRun({ runId, perCell: 3 })
+  assert.equal(r.removed, 3)
+  assert.equal(r.sampled, 3)
+  assert.equal(coverage(runId)[0].done, 2)
+  const r2 = sampleRun({ runId, perCell: 5 })
+  assert.equal(r2.added, 2)
+  db.prepare('DELETE FROM runs WHERE id = ?').run(runId)
 })
