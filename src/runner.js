@@ -342,6 +342,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
     let failed = 0
     let reused = 0
     let stopped = false
+    let consecutiveFailures = 0
     try {
       for (const instance of runnable) {
         const { workflow } = instance
@@ -385,6 +386,7 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
             setStatus.run('done', null, result.outName, Date.now() - startedAt, JSON.stringify(result.probe), JSON.stringify(result.checks), workflow.id, attempt, 'done', instance.id)
             done += 1
             lastError = null
+            consecutiveFailures = 0
             await emit('generation:finished', { instance, outputPath: path.join(config.OUTPUTS_DIR, result.outName) })
             break
           } catch (err) {
@@ -394,6 +396,21 @@ export const runPending = async ({ runId, onProgress = () => {} }) => {
           }
         }
         progress.delete(instance.id)
+        // an environment problem (node pack gone, ComfyUI down) would fail every remaining row the same way:
+        // pause the run instead; the watchdog retries every 5 min and the start check reports the cause
+        const environmental = lastError && /missing_node_type|not reachable|failed after \d+ attempts|ECONNREFUSED/i.test(String(lastError.message))
+        consecutiveFailures = lastError && !/Failed to download/.test(String(lastError.message)) ? consecutiveFailures + 1 : 0
+        if (lastError && (environmental || consecutiveFailures >= 5)) {
+          const reason = environmental
+            ? `paused: ComfyUI problem — ${String(lastError.message).slice(0, 300)}`
+            : `paused: ${consecutiveFailures} generations in a row failed — last error: ${String(lastError.message).slice(0, 300)}`
+          console.error(`[run ${runId}] ${reason}`)
+          stopReasons.set(runId, reason)
+          setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, 'pending', instance.id)
+          onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
+          stopped = true
+          break
+        }
         if (lastError && stopRequests.has(runId)) {
           setStatus.run('pending', null, null, null, null, null, workflow.id, attempt, 'pending', instance.id)
           onProgress({ phase: 'generate', instanceId: instance.id, status: 'pending' })
