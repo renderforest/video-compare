@@ -26,9 +26,5 @@ export default {
   INPUTS_DIR: path.join(ROOT, 'data', 'inputs'),
   PROD_DIR: path.join(ROOT, 'data', 'prod'),
   CSV_DIR: path.join(ROOT, 'data', 'csv'),
-  WORKFLOWS_DIR: path.join(ROOT, 'workflows'),
-  // quality tier → pass-1 megapixels for graphs that size via ResolutionSelector.
-  // Production crops to 854x480 / 1280x720; with the x2 latent upscale in the
-  // reference graph 0.1 MP ≈ 480p and 0.2 MP ≈ 720p. Editable per run in the UI.
-  DEFAULT_QUALITY_MEGAPIXELS: { 480: 0.1, 720: 0.2, 1080: 0.45 }
+  WORKFLOWS_DIR: path.join(ROOT, 'workflows')
 }

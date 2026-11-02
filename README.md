@@ -13,7 +13,7 @@ and get rated (prod better / local better / tie). Sibling of `s2s-compare` and `
    `mode × quality × aspect × duration bucket × style`, and `N` rows per cell are sampled (seeded, stable).
    Cells with no production rows stay empty on purpose — there is nothing to compare.
 3. **Upload** the candidate workflow (ComfyUI *Save (API Format)* export). The tool detects where the
-   prompt, seed, duration, aspect ratio, megapixels and image/audio slots live ("bindings") and shows
+   prompt, seed, duration, aspect ratio and image/audio slots live ("bindings") and shows
    which modes the graph can replay. Bindings are editable in the UI.
 4. **Generate**: sampled rows run one at a time on ComfyUI (single GPU) with a fixed seed per row,
    the output is streamed to `data/outputs/`, the old clip is archived in `data/prod/`, and ffprobe (if
@@ -72,7 +72,6 @@ A raw API export needs no editing. Detected keys:
 | `duration` | seconds (Primitive node titled "Duration…") |
 | `frames` | literal frame count on a *ToVideo / *LatentVideo node (MiniMax 17n+5 grid when the node is MiniMax) |
 | `aspect` | `ResolutionSelector.aspect_ratio` (combo option matched by "16:9" / "9:16" / "1:1") |
-| `megapixels` | `ResolutionSelector.megapixels` from the per-quality setting (default 480p→0.1, 720p→0.2) |
 | `width`, `height`, `crop_width`, `crop_height`, `upscale_factor`, `fps` | production worker tables (`src/dims.js`) |
 | `image_N` / `image_url_N` | `LoadImage` (uploaded file) / URL loader nodes, in node-id order; role `firstFrame`, `lastFrame`, `reference` by title |
 | `audio_url_N` | `VHS_LoadAudio` / `LoadAudio` |
