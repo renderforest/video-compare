@@ -45,7 +45,7 @@ test('detects bindings of the h3 workflow', () => {
   assert.equal(keys.seed.node, '8')
   assert.equal(keys.duration.node, '13')
   assert.equal(keys.aspect.via, 'combo')
-  assert.equal(keys.megapixels.node, '15')
+  assert.equal(keys.megapixels, undefined)
   assert.equal(keys.image_1.node, '10')
   const caps = capabilities(bindings)
   assert.deepEqual(caps.modes, { t2v: true, i2v: true, flf: false, ia2v: false, refi2v: true })
@@ -62,13 +62,13 @@ test('builds an i2v graph and prunes the image loader for t2v', () => {
   const instance = { mode: 'i2v', first_frame_url: 'https://x/a.jpg', ref_images_json: '[]', ref_audios_json: '[]' }
   const { images } = assignMedia({ bindings, instance })
   assert.equal(images[0].binding.key, 'image_1')
-  const values = { prompt: 'hello', seed: 7, duration: 3, aspect: '9:16', megapixels: 0.15, image_1: 'a.jpg', output_prefix: 'vc_1' }
+  const values = { prompt: 'hello', seed: 7, duration: 3, aspect: '9:16', image_1: 'a.jpg', output_prefix: 'vc_1' }
   const built = buildPrompt({ template: graph, bindings, values, objectInfo })
   assert.equal(built['12'].inputs.text, 'hello')
   assert.equal(built['8'].inputs.noise_seed, 7)
   assert.equal(built['13'].inputs.value, 3)
   assert.equal(built['15'].inputs.aspect_ratio, '9:16 (Portrait Widescreen)')
-  assert.equal(built['15'].inputs.megapixels, 0.15)
+  assert.equal(built['15'].inputs.megapixels, graph['15'].inputs.megapixels)
   assert.equal(built['10'].inputs.image, 'a.jpg')
   assert.equal(JSON.parse(built['43'].inputs.SaveVideoState).pattern, 'vc_1')
 

@@ -53,7 +53,7 @@ const handle = (fn) => async (req, res) => {
 // ---- health ----
 
 app.get('/api/health', handle(async (req, res) => {
-  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
+  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, defaults: { modes: MODES, qualities: QUALITIES } })
 }))
 
 // ---- workflows ----
@@ -279,7 +279,7 @@ app.get('/api/instances/:id/graph', handle(async (req, res) => {
   const w = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)
   if (!w) return res.status(400).json({ error: 'No workflow selected' })
   const workflow = { ...w, graph: JSON.parse(w.json), bindings: JSON.parse(w.bindings_json) }
-  const settings = { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(JSON.parse(run.settings_json || '{}').qualityMegapixels || {}) } }
+  const settings = JSON.parse(run.settings_json || '{}')
   const dryClient = { getObjectInfo: () => comfy.getObjectInfo().catch(() => ({})), uploadFile: async ({ filename }) => `(upload) ${filename}` }
   const { graph, values } = await prepareGraph({ client: dryClient, instance, workflow, settings, seed: instance.seed ?? 12345 })
   res.json({ values, graph })
