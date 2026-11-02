@@ -8,7 +8,7 @@ const localUrl = (instance) => (instance.output_path ? `${config.PUBLIC_BASE_URL
 /** One line per sampled instance: inputs, scenario, outcome, rating. */
 export const exportInstancesCsv = (runId) => {
   const rows = db
-    .prepare('SELECT * FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY scenario_key, id')
+    .prepare('SELECT * FROM instances WHERE run_id = ? AND sampled = 1 ORDER BY finished_at IS NULL, finished_at, id')
     .all(runId)
     .map((i) => {
       const probe = i.probe_json ? JSON.parse(i.probe_json) : {}
@@ -39,11 +39,14 @@ export const exportInstancesCsv = (runId) => {
         referenceAudios: JSON.parse(i.ref_audios_json || '[]').join('|'),
         prodVideoUrl: i.prod_video_url,
         localVideoUrl: localUrl(i),
+        localThumbUrl: i.output_thumb ? `${config.PUBLIC_BASE_URL}/thumbs/${encodeURIComponent(i.output_thumb)}` : '',
+        prodThumbUrl: i.prod_thumb ? `${config.PUBLIC_BASE_URL}/thumbs/${encodeURIComponent(i.prod_thumb)}` : '',
         status: i.status,
         error: i.error,
         seed: i.seed,
         workflowId: i.workflow_id,
         reused: i.reused,
+        generatedAt: i.finished_at,
         generationMs: i.duration_ms,
         outWidth: probe.width,
         outHeight: probe.height,
@@ -54,8 +57,12 @@ export const exportInstancesCsv = (runId) => {
         outSizeBytes: probe.sizeBytes,
         checksFailed: checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; '),
         rating: i.rating,
+        ratedBy: i.rated_by,
         ratedAt: i.rated_at,
-        note: i.note
+        note: i.note,
+        favoritedBy: db.prepare('SELECT user FROM favorites WHERE instance_id = ? ORDER BY id').all(i.id).map((f) => f.user).join('|'),
+        prodComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'prod' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n'),
+        localComments: db.prepare("SELECT author, body, created_at FROM comments WHERE instance_id = ? AND side = 'local' ORDER BY id").all(i.id).map((c) => `[${c.created_at} ${c.author}] ${c.body}`).join('\n')
       }
     })
   return stringify(rows, { header: true })

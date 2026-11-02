@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
  * still honoured for people who prefer explicit control.
  *
  * Binding shape: { key, node, input, via?: 'value' | 'combo' | 'json', field?, role?, kind? }
- *   key    what the runner fills: prompt | seed | duration | frames | aspect | megapixels | width | height |
+ *   key    what the runner fills: prompt | seed | duration | frames | aspect | width | height |
  *          crop_width | crop_height | upscale_factor | fps | watermark | output_prefix |
  *          image_<n> (file slot) | image_url_<n> (URL slot) | audio_<n> | audio_url_<n>
  *   via    'value' sets inputs[input]; 'combo' picks the option that matches the aspect ratio;
@@ -16,6 +16,9 @@ import crypto from 'node:crypto'
  */
 
 export const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex')
+
+// bump when detectBindings learns something new; older uploads are re-detected on read
+export const DETECTOR_VERSION = 4
 
 export const onlyNodes = (template) =>
   Object.fromEntries(Object.entries(template).filter(([, v]) => v && typeof v === 'object' && v.class_type))
@@ -94,7 +97,6 @@ export const detectBindings = (graph) => {
     }
     if (node.class_type === 'ResolutionSelector') {
       push({ key: 'aspect', node: id, input: 'aspect_ratio', via: 'combo' })
-      push({ key: 'megapixels', node: id, input: 'megapixels' })
     }
     if (/CenterCropImages/i.test(node.class_type)) {
       if (typeof node.inputs?.width === 'number') push({ key: 'crop_width', node: id, input: 'width' })
@@ -110,10 +112,58 @@ export const detectBindings = (graph) => {
     }
   }
 
-  // media slots, in node-id order
+  // media slots, in node-id order. Role comes from what the loader feeds
+  // (first_frame / last_frame / ref_images.*), then from its title, then from its position.
   let imageSlot = 0
   let audioSlot = 0
-  const roleFor = (node, index) => {
+  const consumers = new Map() // loader id → input names it is wired into
+  for (const [, node] of entries) {
+    for (const [name, value] of Object.entries(node.inputs || {})) {
+      if (!isLink(value)) continue
+      const src = String(value[0])
+      if (!consumers.has(src)) consumers.set(src, new Set())
+      consumers.get(src).add(name)
+    }
+  }
+  // input names reached from a loader, following pass-through nodes (resize, crop, …) up to 4 hops
+  const downstreamInputs = new Map() // node id → Set of input names
+  for (const [, node] of entries) {
+    for (const [name, value] of Object.entries(node.inputs || {})) {
+      if (!isLink(value)) continue
+      const src = String(value[0])
+      if (!downstreamInputs.has(src)) downstreamInputs.set(src, new Set())
+      downstreamInputs.get(src).add(name)
+    }
+  }
+  const outgoing = new Map() // node id → consumer node ids
+  for (const [id, node] of entries) {
+    for (const value of Object.values(node.inputs || {})) {
+      if (!isLink(value)) continue
+      const src = String(value[0])
+      if (!outgoing.has(src)) outgoing.set(src, new Set())
+      outgoing.get(src).add(id)
+    }
+  }
+  const feeds = (id) => {
+    const names = new Set()
+    let frontier = [id]
+    for (let hop = 0; hop < 4 && frontier.length; hop += 1) {
+      const next = []
+      for (const n of frontier) {
+        for (const name of downstreamInputs.get(n) || []) names.add(name)
+        for (const c of outgoing.get(n) || []) next.push(c)
+      }
+      // stop following once a video conditioning node has been reached
+      if ([...names].some((n) => /first_frame|last_frame|ref_image|start_image|end_image/i.test(n))) break
+      frontier = next
+    }
+    return [...names].join(' ')
+  }
+  const roleFor = (node, id, index) => {
+    const fed = feeds(id)
+    if (/last_frame|end_image|end_frame/i.test(fed)) return 'lastFrame'
+    if (/first_frame|start_image|start_frame|^image$/i.test(fed)) return 'firstFrame'
+    if (/ref_image/i.test(fed)) return index === 0 ? 'firstFrame' : 'reference'
     if (/last/i.test(title(node))) return 'lastFrame'
     if (/first|start/i.test(title(node))) return 'firstFrame'
     if (/ref/i.test(title(node))) return 'reference'
@@ -122,12 +172,12 @@ export const detectBindings = (graph) => {
   for (const [id, node] of entries) {
     if (IMAGE_FILE_CLASSES.test(node.class_type) && typeof node.inputs?.image === 'string') {
       imageSlot += 1
-      push({ key: `image_${imageSlot}`, node: id, input: 'image', role: roleFor(node, imageSlot - 1) })
+      push({ key: `image_${imageSlot}`, node: id, input: 'image', role: roleFor(node, id, imageSlot - 1), ...(/ref_image/i.test(feeds(id)) && { kind: 'reference' }) })
     } else if (IMAGE_URL_CLASSES.test(node.class_type)) {
       const input = ['url', 'image_url', 'image'].find((f) => typeof node.inputs?.[f] === 'string')
       if (!input) continue
       imageSlot += 1
-      push({ key: `image_url_${imageSlot}`, node: id, input, role: roleFor(node, imageSlot - 1) })
+      push({ key: `image_url_${imageSlot}`, node: id, input, role: roleFor(node, id, imageSlot - 1), ...(/ref_image/i.test(feeds(id)) && { kind: 'reference' }) })
     } else if (AUDIO_CLASSES.test(node.class_type)) {
       const input = ['audio_file', 'audio', 'url'].find((f) => typeof node.inputs?.[f] === 'string')
       if (!input) continue
@@ -148,12 +198,15 @@ export const capabilities = (bindings) => {
   const audios = bindings.filter((b) => /^audio(_url)?_\d+$/.test(b.key))
   const hasPrompt = bindings.some((b) => b.key === 'prompt')
   const hasLastFrame = images.some((b) => b.role === 'lastFrame')
+  // reference slots feed ref_images.*; a graph with only first/last frame inputs cannot take references
+  const referenceSlots = images.filter((b) => b.kind === 'reference').length
   return {
     hasPrompt,
     hasDuration: bindings.some((b) => b.key === 'duration' || b.key === 'frames'),
     hasAspect: bindings.some((b) => ['aspect', 'width', 'height'].includes(b.key)),
-    hasQuality: bindings.some((b) => ['megapixels', 'width', 'crop_width'].includes(b.key)),
+    hasQuality: bindings.some((b) => ['width', 'crop_width'].includes(b.key)),
     imageSlots: images.length,
+    referenceSlots,
     audioSlots: audios.length,
     hasLastFrame,
     modes: {
@@ -161,10 +214,12 @@ export const capabilities = (bindings) => {
       i2v: images.length >= 1,
       flf: images.length >= 2 && hasLastFrame,
       ia2v: images.length >= 1 && audios.length >= 1,
-      refi2v: images.length >= 1
+      refi2v: referenceSlots >= 1
     }
   }
 }
+
+export const MODES = ['t2v', 'i2v', 'flf', 'ia2v', 'refi2v']
 
 /** Why an instance cannot run on this workflow, or null when it can. */
 export const unsupportedReason = ({ caps, instance }) => {
@@ -172,7 +227,7 @@ export const unsupportedReason = ({ caps, instance }) => {
   const refAudios = JSON.parse(instance.ref_audios_json || '[]')
   if (!caps.modes[instance.mode]) return `workflow has no inputs for mode ${instance.mode}`
   if (instance.mode === 'refi2v') {
-    if (refImages.length > caps.imageSlots) return `needs ${refImages.length} image slots, workflow has ${caps.imageSlots}`
+    if (refImages.length > caps.referenceSlots) return `needs ${refImages.length} reference image slots, workflow has ${caps.referenceSlots}`
     if (refAudios.length > caps.audioSlots) return `needs ${refAudios.length} audio slots, workflow has ${caps.audioSlots}`
   }
   return null
@@ -207,7 +262,8 @@ export const assignMedia = ({ bindings, instance }) => {
     case 'refi2v': {
       const refImages = JSON.parse(instance.ref_images_json || '[]')
       const refAudios = JSON.parse(instance.ref_audios_json || '[]')
-      refImages.forEach((url, i) => put(images, imageSlots[i], url))
+      const referenceSlots = imageSlots.filter((b) => b.kind === 'reference')
+      refImages.forEach((url, i) => put(images, referenceSlots[i] || imageSlots[i], url))
       refAudios.forEach((url, i) => put(audios, audioSlots[i], url))
       break
     }

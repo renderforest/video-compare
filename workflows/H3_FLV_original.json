@@ -1,0 +1,447 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Base model - FL2VA, not ref2va"
+    }
+  },
+  "2": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "Attention backend"
+    }
+  },
+  "4": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Text encoder"
+    }
+  },
+  "5": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAE video"
+    }
+  },
+  "6": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAE audio"
+    }
+  },
+  "7": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Sampler"
+    }
+  },
+  "8": {
+    "inputs": {
+      "noise_seed": 1121747802326063
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "10": {
+    "inputs": {
+      "image": "pasted/image (85).png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "<Picture 1>"
+    }
+  },
+  "12": {
+    "inputs": {
+      "text": "integrated_multimodal_description: [Shot 1] Photorealistic live-action cinematography, shot from an underwater housing and a rail cam above, wide lens with hard arena lighting. A woman swimmer powers through the middle of the pool mid-race, body rolling from side to side, arms cycling in a steady rhythm, water churning white around her and the lane ropes shaking, with both walls far away and rival swimmers pulling level in the neighbouring lanes. Turquoise water, black lane lines stretching ahead, spectator stands in dark bokeh, bright hard overhead light, clean cyan and white grade. The camera races alongside underwater at high speed, matching her stroke and rolling with her as she breathes, then rises through the surface into the noise and light of the arena. It tracks three strokes from above, whip-pans across to the swimmer in the next lane and snaps back to her, then drops under again as her hand spears into the water and she surges half a body length clear.\noverall_soundscape: Underwater rush and muffled crowd noise alternate with every stroke as her head turns, water churns violently, hands enter with sharp repeated punches, and the arena roar swells and dips with each breath.\nnon_diegetic_music: A tense percussive pulse locked to the stroke rhythm, building steadily without resolving."
+    },
+    "class_type": "DenoPromptText",
+    "_meta": {
+      "title": "PROMPT"
+    }
+  },
+  "13": {
+    "inputs": {
+      "value": 5
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Duration sec"
+    }
+  },
+  "14": {
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Frame count (auto)"
+    }
+  },
+  "15": {
+    "inputs": {
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 0.2,
+      "multiple": 64
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "KNOB A: pass-1 megapixels (0.5 = 896x512)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+      "strength_model": 1.4,
+      "model": [
+        "236",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "FL2V Turbo 4-step 768p"
+    }
+  },
+  "21": {
+    "inputs": {
+      "shift_video": 12,
+      "shift_audio": 3,
+      "model": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "PASS 1 - shift 12/3"
+    }
+  },
+  "22": {
+    "inputs": {
+      "scheduler": "beta57",
+      "steps": 6,
+      "denoise": 1,
+      "model": [
+        "21",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "KNOB B: pass-1 steps (8)"
+    }
+  },
+  "23": {
+    "inputs": {
+      "model": [
+        "21",
+        0
+      ],
+      "conditioning": [
+        "263",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "PASS 1 - guider"
+    }
+  },
+  "24": {
+    "inputs": {
+      "noise": [
+        "8",
+        0
+      ],
+      "guider": [
+        "23",
+        0
+      ],
+      "sampler": [
+        "7",
+        0
+      ],
+      "sigmas": [
+        "22",
+        0
+      ],
+      "latent_image": [
+        "263",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "PASS 1 - SAMPLER"
+    }
+  },
+  "30": {
+    "inputs": {
+      "av_latent": [
+        "24",
+        1
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "PASS 2 - split AV"
+    }
+  },
+  "31": {
+    "inputs": {
+      "model_name": "minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
+      "mode": "scale by multiplier",
+      "mode.scale": [
+        "219",
+        0
+      ],
+      "align": 32,
+      "enable_temporal_chunking": true,
+      "force_unload": false,
+      "device": "cuda",
+      "precision": "fp16",
+      "latent": [
+        "30",
+        0
+      ]
+    },
+    "class_type": "MinimaxH3LatentUpscaler3D",
+    "_meta": {
+      "title": "PASS 2 - upscaler x1.5"
+    }
+  },
+  "32": {
+    "inputs": {
+      "video_latent": [
+        "31",
+        0
+      ],
+      "audio_latent": [
+        "30",
+        1
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "PASS 2 - merge AV"
+    }
+  },
+  "37": {
+    "inputs": {
+      "noise": [
+        "8",
+        0
+      ],
+      "guider": [
+        "23",
+        0
+      ],
+      "sampler": [
+        "7",
+        0
+      ],
+      "sigmas": [
+        "235",
+        0
+      ],
+      "latent_image": [
+        "32",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "PASS 2 - SAMPLER"
+    }
+  },
+  "40": {
+    "inputs": {
+      "samples": [
+        "37",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Decode video"
+    }
+  },
+  "42": {
+    "inputs": {
+      "samples": [
+        "24",
+        0
+      ],
+      "vae": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "Decode audio (from pass 1)"
+    }
+  },
+  "43": {
+    "inputs": {
+      "fps": 24,
+      "video_frames": [
+        "40",
+        0
+      ],
+      "audio": [
+        "42",
+        0
+      ],
+      "SaveVideoState": "{\"version\":1,\"folder\":\"\",\"pattern\":\"Hybrid_%date:yyyy-MM-dd%_%counter%\",\"format\":\"mp4\",\"quality\":100,\"bitDepth\":10,\"trimToAudio\":false,\"audioFadeMs\":0,\"embedWorkflow\":true,\"saveOnRun\":true,\"dateStyle\":\"yyyy-MM-dd\",\"counterDigits\":3,\"folded\":true,\"hideBarWhenFolded\":true,\"showOpen\":true,\"showDownload\":true}"
+    },
+    "class_type": "PixaromaSaveVideo",
+    "_meta": {
+      "title": "Save video"
+    }
+  },
+  "219": {
+    "inputs": {
+      "value": 2
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Upscale Resolution"
+    }
+  },
+  "235": {
+    "inputs": {
+      "scheduler": "beta57",
+      "steps": 3,
+      "denoise": 0.5,
+      "model": [
+        "255",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "KNOB B: pass-1 steps (8)"
+    }
+  },
+  "236": {
+    "inputs": {
+      "selection": "sol-attn",
+      "selection.tau": 1.3,
+      "start_percent": 0.2,
+      "end_percent": 1,
+      "dense_blocks": "",
+      "min_tokens": 12288,
+      "extra_tokens": 256,
+      "sink_conditioning": "exact_kv_and_rows",
+      "verbose": false,
+      "model": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "BlockSparseAttention",
+    "_meta": {
+      "title": "Model Sparse Attention"
+    }
+  },
+  "255": {
+    "inputs": {
+      "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+      "strength_model": 1.1,
+      "model": [
+        "236",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "FL2V Turbo 4-step 768p"
+    }
+  },
+  "263": {
+    "inputs": {
+      "prompt": [
+        "12",
+        0
+      ],
+      "width": [
+        "15",
+        0
+      ],
+      "height": [
+        "15",
+        1
+      ],
+      "length": [
+        "14",
+        1
+      ],
+      "clip": [
+        "4",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ],
+      "first_frame": [
+        "10",
+        0
+      ],
+      "last_frame": [
+        "264",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ImageToVideo",
+    "_meta": {
+      "title": "MiniMax H3 Image to Video"
+    }
+  },
+  "264": {
+    "inputs": {
+      "image": "pasted/image (85).png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "<Picture 1>"
+    }
+  }
+}

@@ -14,9 +14,10 @@ export const DEFAULT_BUCKETS = [
   { name: '16+', max: Infinity }
 ]
 
+// empty, "null"/"NULL", and Postgres' text-format NULL marker "\\N" all mean no value
 const nullish = (value) => {
   const s = String(value ?? '').trim()
-  return !s || s.toLowerCase() === 'null' ? null : s
+  return !s || s.toLowerCase() === 'null' || s === '\\N' ? null : s
 }
 
 const splitUrls = (value) =>

@@ -58,15 +58,17 @@ export const importCsv = async ({ csvPath, name, perCell = 5, seed }) => {
 }
 
 /**
- * Marks up to `perCell` rows per scenario cell as sampled (seeded, stable). Rows already
- * sampled count toward the quota, so re-running with a larger perCell only adds rows.
+ * Brings every scenario cell to `perCell` sampled rows (seeded, stable).
+ * Raising the number adds unsampled rows; lowering it drops sampled rows that have not
+ * been generated yet — rows that are done, rated, or currently running are always kept,
+ * so a cell can stay above the target when that much work already exists.
  */
 export const sampleRun = ({ runId, perCell, seed }) => {
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
   if (!run) throw new Error(`Run ${runId} not found`)
   const rand = mulberry32(seed ?? run.sample_seed)
   const rows = db
-    .prepare('SELECT id, scenario_key, sampled FROM instances WHERE run_id = ? ORDER BY id')
+    .prepare('SELECT id, scenario_key, sampled, status, rating FROM instances WHERE run_id = ? ORDER BY id')
     .all(runId)
   const byCell = new Map()
   for (const row of rows) {
@@ -74,25 +76,32 @@ export const sampleRun = ({ runId, perCell, seed }) => {
     byCell.get(row.scenario_key).push(row)
   }
   const mark = db.prepare('UPDATE instances SET sampled = 1 WHERE id = ?')
+  const unmark = db.prepare("UPDATE instances SET sampled = 0, status = 'pending', error = NULL, workflow_id = NULL WHERE id = ?")
+  const keep = (r) => r.status === 'done' || r.status === 'running' || r.rating
   let added = 0
+  let removed = 0
   db.transaction(() => {
     for (const cellRows of byCell.values()) {
-      const already = cellRows.filter((r) => r.sampled).length
-      const need = Math.max(0, perCell - already)
-      if (!need) continue
-      const pool = shuffle(
-        cellRows.filter((r) => !r.sampled),
-        rand
-      )
-      for (const row of pool.slice(0, need)) {
-        mark.run(row.id)
-        added += 1
+      const sampled = cellRows.filter((r) => r.sampled)
+      if (sampled.length < perCell) {
+        const pool = shuffle(cellRows.filter((r) => !r.sampled), rand)
+        for (const row of pool.slice(0, perCell - sampled.length)) {
+          mark.run(row.id)
+          added += 1
+        }
+      } else if (sampled.length > perCell) {
+        // drop from the least valuable end: unsupported/failed/pending rows, seeded order
+        const droppable = shuffle(sampled.filter((r) => !keep(r)), rand)
+        for (const row of droppable.slice(0, sampled.length - perCell)) {
+          unmark.run(row.id)
+          removed += 1
+        }
       }
     }
     db.prepare('UPDATE runs SET per_cell = ? WHERE id = ?').run(perCell, runId)
   })()
-  const sampled = db.prepare('SELECT COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1').get(runId).c
-  return { sampled, added, cells: byCell.size }
+  const total = db.prepare('SELECT COUNT(*) AS c FROM instances WHERE run_id = ? AND sampled = 1').get(runId).c
+  return { sampled: total, added, removed, cells: byCell.size }
 }
 
 /** Coverage table: one line per scenario cell with pool/sampled/progress/rating counts. */
