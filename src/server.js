@@ -60,7 +60,7 @@ const handle = (fn) => async (req, res) => {
 app.get('/api/health', handle(async (req, res) => {
   const bins = await getBinaries()
   const freeGb = await freeDiskGb().catch(() => null)
-  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), disk: { freeGb: freeGb == null ? null : Math.round(freeGb * 10) / 10, minFreeGb: config.MIN_FREE_DISK_GB, comfyOutputDir: config.COMFY_OUTPUT_DIR || null }, defaults: { qualityMegapixels: config.DEFAULT_QUALITY_MEGAPIXELS, modes: MODES, qualities: QUALITIES } })
+  res.json({ ok: true, comfyUrl: config.COMFY_URL, comfyReachable: await comfy.ping(), publicBaseUrl: config.PUBLIC_BASE_URL, ffmpeg: !!bins.ffmpeg, ffprobe: !!bins.ffprobe, thumbnailBackfill: isBackfillRunning(), disk: { freeGb: freeGb == null ? null : Math.round(freeGb * 10) / 10, minFreeGb: config.MIN_FREE_DISK_GB, comfyOutputDir: config.COMFY_OUTPUT_DIR || null }, defaults: { modes: MODES, qualities: QUALITIES } })
 }))
 
 // thumbnails are made automatically when a clip finishes; this fills in older rows
