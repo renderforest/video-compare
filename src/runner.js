@@ -136,7 +136,7 @@ export const settingsOf = (run) => {
   } catch {
     settings = {}
   }
-  return { qualityMegapixels: { ...config.DEFAULT_QUALITY_MEGAPIXELS, ...(settings.qualityMegapixels || {}) }, ...settings }
+  return settings
 }
 
 /** Loads a workflow row; bindings detected by an older detector are re-detected once and saved. */
@@ -200,7 +200,6 @@ export const valuesFor = ({ instance, settings, seed }) => {
     frames_minimax: dims.minimaxFrameCount,
     aspect: instance.aspect,
     aspect_ratio: instance.aspect,
-    megapixels: settings.qualityMegapixels[instance.quality] ?? settings.qualityMegapixels[720],
     quality: instance.quality,
     width: dims.width,
     height: dims.height,

@@ -143,20 +143,13 @@
       </div>
       <div class="caps" id="wfCaps"></div>
       <table class="cov" id="wfModes"></table>
-      <div class="hint">One upload per graph (e.g. reference-image graph, first/last-frame graph). Each mode uses the workflow chosen in its row; <b>auto</b> = the default when it supports the mode, else the newest upload that does. Export from ComfyUI with <b>Save (API Format)</b>; prompt, seed, duration, aspect, megapixels and image slots are detected from the graph.</div>
+      <div class="hint">One upload per graph (e.g. reference-image graph, first/last-frame graph). Each mode uses the workflow chosen in its row; <b>auto</b> = the default when it supports the mode, else the newest upload that does. Export from ComfyUI with <b>Save (API Format)</b>; prompt, seed, duration, aspect and image slots are detected from the graph.</div>
     </div>
 
     <div class="card">
       <h2>Generate</h2>
       <div class="big" id="genSummary">—</div>
       <div class="hint" id="genDetail"></div>
-      <div class="divider"></div>
-      <div class="row">
-        <label>pass-1 MP</label>
-        <label>480p <input type="number" id="mp480" step="0.05" min="0.05" max="4"></label>
-        <label>720p <input type="number" id="mp720" step="0.05" min="0.05" max="4"></label>
-      </div>
-      <div class="hint">Megapixels sent to <code>ResolutionSelector</code> per quality tier (graphs sized by width/height use the production tables instead).</div>
       <div class="divider"></div>
       <button class="primary" id="startBtn" style="width:100%">Start generation</button>
       <button class="danger" id="stopBtn" style="width:100%; margin-top:8px" hidden>Stop generation</button>
@@ -338,7 +331,6 @@ async function health () {
     $('health').className = `health ${h.comfyReachable && !diskLow ? 'ok' : 'bad'}`
     $('health').textContent = `ComfyUI ${h.comfyUrl} ${h.comfyReachable ? 'reachable' : 'UNREACHABLE'}` +
       (h.disk && h.disk.freeGb != null ? ` · disk ${h.disk.freeGb} GB free${diskLow ? ` (below ${h.disk.minFreeGb} GB — generation paused)` : ''}` : '')
-    if (!$('mp480').value) { $('mp480').value = h.defaults.qualityMegapixels[480]; $('mp720').value = h.defaults.qualityMegapixels[720] }
   } catch {
     $('health').className = 'health bad'
     $('health').textContent = 'server unreachable'
@@ -493,7 +485,7 @@ async function showWorkflowDetails (id) {
     : w.missingClasses.length ? `<span class="badge no">missing on ComfyUI: ${esc(w.missingClasses.join(', '))}</span>` : '<span class="badge yes">all node classes available on ComfyUI</span>'
   $('textDlgBody').innerHTML = `<h3 style="margin:0 0 8px">${esc(w.name)} <small style="color:var(--muted)">#${w.id} · ${w.nodes.length} nodes · ${w.sha1.slice(0, 8)}</small></h3>
     <div class="caps">${Object.entries(w.capabilities.modes).map(([m, ok]) => `<span class="badge ${ok ? 'yes' : 'no'}">${m}</span>`).join('')} ${missing}</div>
-    <p class="hint">Bindings = where each value is written. Keys: prompt, seed, duration, frames, aspect (combo option), megapixels, width, height, crop_width, crop_height, upscale_factor, fps, watermark, output_prefix, image_N / image_url_N (role firstFrame | lastFrame | reference), audio_url_N.</p>
+    <p class="hint">Bindings = where each value is written. Keys: prompt, seed, duration, frames, aspect (combo option), width, height, crop_width, crop_height, upscale_factor, fps, watermark, output_prefix, image_N / image_url_N (role firstFrame | lastFrame | reference), audio_url_N.</p>
     <table class="cov"><tr><th>key</th><th>node</th><th>class / title</th><th>input</th><th>role</th></tr>${rows}</table>
     <div class="divider"></div>
     <details><summary>Edit bindings (JSON)</summary>
@@ -533,10 +525,6 @@ async function refresh (full = false) {
   ])
   if (full || !workflows.length) {
     await loadWorkflows(run)
-    if (run.settings && run.settings.qualityMegapixels) {
-      $('mp480').value = run.settings.qualityMegapixels[480] ?? $('mp480').value
-      $('mp720').value = run.settings.qualityMegapixels[720] ?? $('mp720').value
-    }
     $('perCell').value = run.per_cell || 5
     await loadFilterValues()
   }
@@ -910,7 +898,7 @@ window.showGraph = async (id) => {
 }
 
 // ---- actions ----
-const settingsPayload = () => ({ qualityMegapixels: { 480: Number($('mp480').value) || 0.1, 720: Number($('mp720').value) || 0.2 }, workflowsByMode: workflowsByModeFromUi() })
+const settingsPayload = () => ({ workflowsByMode: workflowsByModeFromUi() })
 $('startBtn').onclick = async () => {
   try {
     await post(`/api/runs/${currentRunId}/start`, { workflowId: Number($('wfSelect').value) || null, settings: settingsPayload() })

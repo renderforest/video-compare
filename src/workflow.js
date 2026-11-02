@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
  * still honoured for people who prefer explicit control.
  *
  * Binding shape: { key, node, input, via?: 'value' | 'combo' | 'json', field?, role?, kind? }
- *   key    what the runner fills: prompt | seed | duration | frames | aspect | megapixels | width | height |
+ *   key    what the runner fills: prompt | seed | duration | frames | aspect | width | height |
  *          crop_width | crop_height | upscale_factor | fps | watermark | output_prefix |
  *          image_<n> (file slot) | image_url_<n> (URL slot) | audio_<n> | audio_url_<n>
  *   via    'value' sets inputs[input]; 'combo' picks the option that matches the aspect ratio;
@@ -18,7 +18,7 @@ import crypto from 'node:crypto'
 export const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex')
 
 // bump when detectBindings learns something new; older uploads are re-detected on read
-export const DETECTOR_VERSION = 3
+export const DETECTOR_VERSION = 4
 
 export const onlyNodes = (template) =>
   Object.fromEntries(Object.entries(template).filter(([, v]) => v && typeof v === 'object' && v.class_type))
@@ -97,7 +97,6 @@ export const detectBindings = (graph) => {
     }
     if (node.class_type === 'ResolutionSelector') {
       push({ key: 'aspect', node: id, input: 'aspect_ratio', via: 'combo' })
-      push({ key: 'megapixels', node: id, input: 'megapixels' })
     }
     if (/CenterCropImages/i.test(node.class_type)) {
       if (typeof node.inputs?.width === 'number') push({ key: 'crop_width', node: id, input: 'width' })
@@ -205,7 +204,7 @@ export const capabilities = (bindings) => {
     hasPrompt,
     hasDuration: bindings.some((b) => b.key === 'duration' || b.key === 'frames'),
     hasAspect: bindings.some((b) => ['aspect', 'width', 'height'].includes(b.key)),
-    hasQuality: bindings.some((b) => ['megapixels', 'width', 'crop_width'].includes(b.key)),
+    hasQuality: bindings.some((b) => ['width', 'crop_width'].includes(b.key)),
     imageSlots: images.length,
     referenceSlots,
     audioSlots: audios.length,
